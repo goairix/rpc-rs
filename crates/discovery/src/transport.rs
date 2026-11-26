@@ -124,10 +124,24 @@ impl Service<Request<Body>> for DiscoveredService {
             let _permit = permit;
             Ok(match channel.oneshot(request).await {
                 Ok(response) => response,
-                Err(error) => Status::unavailable(describe(&error)).into_http(),
+                Err(error) => request_status(Box::new(error)).into_http(),
             })
         })
     }
+}
+
+/// Tonic maps its own transport request timer to Cancelled. For that specific timer
+/// surface the RPC deadline, preserving explicit cancellations and other wire statuses.
+fn request_status(error: Box<dyn Error + Send + Sync>) -> Status {
+    let mut source: Option<&(dyn Error + 'static)> = Some(error.as_ref());
+    while let Some(cause) = source {
+        if cause.is::<tonic::TimeoutExpired>() {
+            return Status::deadline_exceeded(cause.to_string());
+        }
+        source = cause.source();
+    }
+    Status::try_from_error(error)
+        .unwrap_or_else(|error| Status::unavailable(describe(error.as_ref())))
 }
 
 pub(crate) fn describe(error: &(dyn Error + 'static)) -> String {
@@ -248,6 +262,26 @@ impl AsyncWrite for Observed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transport_timer_is_a_deadline_and_explicit_cancellation_survives() {
+        // A transport error wraps a concrete timer through its source chain.
+        #[derive(Debug, thiserror::Error)]
+        #[error("transport failure")]
+        struct Transport(#[source] tonic::TimeoutExpired);
+        assert_eq!(
+            request_status(Box::new(Transport(tonic::TimeoutExpired(())))).code(),
+            tonic::Code::DeadlineExceeded
+        );
+        assert_eq!(
+            request_status(Box::new(Status::cancelled("caller"))).code(),
+            tonic::Code::Cancelled
+        );
+        assert_eq!(
+            request_status(Box::new(io::Error::other("socket"))).code(),
+            tonic::Code::Unavailable
+        );
+    }
+
     #[tokio::test]
     async fn poll_ready_reserves_bounded_capacity_and_drop_releases_it() {
         let routes = Arc::new(ArcSwap::from_pointee(Routes::empty("empty")));
