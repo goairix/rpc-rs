@@ -1,0 +1,15 @@
+syntax = "proto3";
+package interop;
+option go_package = "example.org/rpc-interop/pb";
+
+service Echo {
+  rpc Say(Message) returns (Message);
+  rpc Upload(stream Message) returns (Message);
+  rpc Download(Message) returns (stream Message);
+  rpc Chat(stream Message) returns (stream Message);
+}
+message Message {
+  int32 sequence = 1;
+  string value = 2;
+  string instance = 3;
+}
