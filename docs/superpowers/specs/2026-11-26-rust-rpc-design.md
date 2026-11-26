@@ -61,7 +61,7 @@ Go 包是功能对标，不是 Rust 内部架构、公开 API 或实现算法的
 - `config`：服务监听地址、反射开关、etcd endpoints/namespace，以及显式超时、
   租约、认证和 TLS 配置。etcd 默认 namespace 为 `grpc`、租约 5 秒、超时 2 秒。
 - `metadata`：注册入参、持久化服务元数据和服务状态。
-- `naming`：注册中心抽象、etcd 注册实现和服务发现生命周期。
+- `naming`：注册、解析、订阅契约与服务元数据。静态文件和 etcd 后端各自封装注册与解析实现；连接维护和选址由消费快照的 `discovery` 层负责。
 - `balancer`：`pick_first`、`round_robin`、`weighted_round_robin`；默认轮询。
 - `server`：组合生成的 tonic 服务、内置治理层、健康检查和可选反射，
   提供异步 serve、显式关闭和优雅退出能力。

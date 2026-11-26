@@ -4,7 +4,11 @@
 
 ## 选择注册与发现后端
 
-服务端向 `RpcServer::start` 传入 `Arc<dyn registry::Registry>`，直连时传 `None`。客户端向 `discovery::Discovery::connect` 传入 `&dyn discovery::Resolver` 和服务名。两端独立选择实现，跨语言按名称发现时需要共享兼容的服务目录。
+服务端向 `RpcServer::start` 传入 `Arc<dyn naming::Registry>`，直连时传 `None`。客户端向 `discovery::Discovery::connect` 传入 `&dyn naming::Resolver` 和服务名。两端独立选择实现，跨语言按名称发现时需要共享兼容的服务目录。
+
+命名层入口为 `rpc_rs::naming`。两个内置后端的注册、发现和资源管理各自集中在 `naming::etcd` 和 `naming::static_registry`。实现第三方后端时，从 `naming` 导入 `Registry`、`Resolver`、`DiscoverySubscription` 以及元数据类型。客户端的连接、故障重连和负载均衡由 `rpc_rs::discovery` 负责。
+
+共享注册器由创建它的应用负责关闭。服务端停机只撤销自己创建的注册。`dyn Registry` 支持异步 `close()` 和 `on_status_change`；静态目录在加载后保持只读，etcd 后端通过 watch 派发外部变更通知。
 
 默认启用 Cargo 特性 `etcd`，内置的注册实现是 `EtcdRegistry`，发现客户端可直接传 `&EtcdConfig`。使用其他后端时可以关闭该特性：
 
@@ -31,7 +35,7 @@ rpc-rs = { path = "../rpc-rs", default-features = false }
 服务端和客户端各自在启动时加载一份。以下示例中第一台服务器监听所有网卡，并通告文件中对应的地址：
 
 ```rust
-use rpc_rs::{registry::RegistrationOptions, server::RpcServer, static_registry::StaticRegistry};
+use rpc_rs::{naming::{RegistrationOptions, static_registry::StaticRegistry}, server::RpcServer};
 use std::sync::Arc;
 
 let directory = Arc::new(StaticRegistry::from_file("services.json")?);
@@ -46,7 +50,7 @@ server.until(async { tokio::signal::ctrl_c().await.ok(); }).await?;
 客户端按服务名选择实例：
 
 ```rust
-use rpc_rs::{discovery::{Discovery, DiscoveryOptions, LbPolicy}, static_registry::StaticRegistry};
+use rpc_rs::{discovery::{Discovery, DiscoveryOptions, LbPolicy}, naming::static_registry::StaticRegistry};
 
 let directory = StaticRegistry::from_file("services.json")?;
 let options = DiscoveryOptions { policy: LbPolicy::WeightedRoundRobin, ..Default::default() };
@@ -85,7 +89,7 @@ cargo build -p rpc-interop
 
 ```rust
 use rpc_rs::{
-    registry::{EtcdConfig, EtcdRegistry, RegistrationOptions},
+    naming::{etcd::{EtcdConfig, EtcdRegistry}, RegistrationOptions},
     server::RpcServer,
 };
 use std::sync::Arc;
@@ -113,7 +117,7 @@ result?;
 use rpc_rs::{
     discovery::{Discovery, DiscoveryOptions, LbPolicy},
     governance::{CircuitBreaker, RetryPolicy, UnaryPolicy},
-    registry::EtcdConfig,
+    naming::etcd::EtcdConfig,
 };
 use std::time::Duration;
 

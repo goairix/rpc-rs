@@ -1,9 +1,10 @@
 //! Exercise the public backend interfaces through a generated client and a real listener.
 use rpc_rs::{
-    discovery::{Discovery, DiscoveryError, DiscoverySubscription, Resolver, Snapshot},
-    registry::{
-        Registration, RegistrationHandle, RegistrationOptions, Registry, RegistryError,
-        ServiceMetadata, ServiceStatus,
+    discovery::Discovery,
+    naming::{
+        DiscoveryError, DiscoverySubscription, Registration, RegistrationHandle,
+        RegistrationOptions, Registry, RegistryError, Resolver, ServiceMetadata, ServiceStatus,
+        Snapshot,
     },
     server::RpcServer,
 };

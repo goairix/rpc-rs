@@ -1,7 +1,5 @@
-use rpc_rs::{
-    discovery::Resolver,
-    registry::{Registration, RegistrationOptions, Registry},
-    static_registry::StaticRegistry,
+use rpc_rs::naming::{
+    Registration, RegistrationOptions, Registry, Resolver, static_registry::StaticRegistry,
 };
 use std::time::Duration;
 

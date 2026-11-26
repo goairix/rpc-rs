@@ -22,7 +22,7 @@
 ## 跨语言契约
 
 - Rust 对外只用标准 gRPC 状态码 0–16。Go 端的非标准码在 Rust 端表现为 `UNKNOWN`。变更错误处理时，分别验证调用方向和 unary／streaming，预期以规格中的错误码表为准。
-- 注册与发现使用独立的后端接口。新增后端时复用公共路由与服务生命周期逻辑。下述 key、lease 和 revision 约定适用于 etcd 实现。
+- 注册、名称解析与订阅契约集中在 `crates/naming`；每个后端的注册与解析实现放在同一后端模块。服务端依赖 `naming::Registry`，连接层依赖 `naming::Resolver`。新增后端时复用公共路由与服务生命周期逻辑。下述 key、lease 和 revision 约定适用于 etcd 实现。
 - etcd 默认 namespace 为 `grpc`，注册 key 为 `/<namespace>/<service_name>/<instance_id>`。保持 Go JSON 字段名、Unix 秒时间戳及对 `tags`、`properties` 为 null 的兼容。更新治理字段时保留原 key 和 lease。
 - 同一 registry 的同名注册应幂等。租约恢复复用实例 ID、key、注册时间与最新治理状态；启动回滚和停机只撤销当前所有者创建的实例。
 - 注册端从首次 Put 的 revision + 1 监听自身 key，发现端从线性快照的 revision + 1 监听服务前缀。遇到 compaction 后先重新读取当前值，再续订。
