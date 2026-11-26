@@ -43,7 +43,8 @@ enum Command {
 }
 
 struct Worker {
-    sender: mpsc::Sender<Command>,
+    /// The directory cannot keep an unregistered service mailbox alive.
+    sender: mpsc::WeakSender<Command>,
     task: JoinHandle<Result<(), RegistryError>>,
 }
 
@@ -131,6 +132,11 @@ impl EtcdRegistry {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn worker_count(&self) -> usize {
+        self.0.state.lock().unwrap().workers.len()
+    }
+
     fn worker(
         &self,
         name: &str,
@@ -140,24 +146,43 @@ impl EtcdRegistry {
         if state.close.is_some() {
             return Err(RegistryError::Closed);
         }
-        if let Some(worker) = state.workers.get(name) {
-            return Ok(Some(worker.sender.clone()));
+        if let Some(sender) = state.workers.get(name).and_then(|w| w.sender.upgrade()) {
+            return Ok(Some(sender));
         }
         if !create {
             return Ok(None);
         }
         let (sender, commands) = mpsc::channel(8);
-        let task = tokio::spawn(serve_commands(
+        let weak = sender.downgrade();
+        let owner = Arc::downgrade(&self.0);
+        let service = name.to_owned();
+        let commands = serve_commands(
             self.client(),
             self.0.config.clone(),
             self.0.updates.clone(),
             self.0.stop.child_token(),
+            weak,
             commands,
-        ));
+        );
+        let task = tokio::spawn(async move {
+            let result = commands.await;
+            if let Some(inner) = owner.upgrade() {
+                let mut state = inner.state.lock().unwrap();
+                // A new caller can already have created a replacement mailbox.
+                if state
+                    .workers
+                    .get(&service)
+                    .is_some_and(|w| w.task.id() == tokio::task::id())
+                {
+                    state.workers.remove(&service);
+                }
+            }
+            result
+        });
         state.workers.insert(
             name.to_owned(),
             Worker {
-                sender: sender.clone(),
+                sender: sender.downgrade(),
                 task,
             },
         );
@@ -264,13 +289,19 @@ async fn serve_commands(
     config: Arc<EtcdConfig>,
     updates: mpsc::Sender<ServiceMetadata>,
     stop: CancellationToken,
+    mailbox: mpsc::WeakSender<Command>,
     mut commands: mpsc::Receiver<Command>,
 ) -> Result<(), RegistryError> {
-    let mut current: Option<Instance> = None;
+    // Hold the mailbox while leased or processing a command. After unregistration,
+    // outstanding callers alone keep it alive until every queued command completes.
+    let mut current: Option<(Instance, mpsc::Sender<Command>)> = None;
     while let Some(Some(command)) = stop.run_until_cancelled(commands.recv()).await {
         if stop.is_cancelled() {
             break;
         }
+        let Some(hold) = mailbox.upgrade() else {
+            break;
+        };
         match command {
             Command::Register(options, reply) => {
                 if current.is_some() {
@@ -293,7 +324,7 @@ async fn serve_commands(
                         {
                             instance.stop().await?;
                         } else {
-                            current = Some(instance);
+                            current = Some((instance, hold));
                         }
                     }
                     Err(e) => {
@@ -302,12 +333,12 @@ async fn serve_commands(
                 }
             }
             Command::Remove(id, reply) => {
-                let matches = current.as_ref().is_some_and(|instance| {
+                let matches = current.as_ref().is_some_and(|(instance, _)| {
                     id.as_ref()
                         .is_none_or(|owner| owner == &instance.handle.instance_id)
                 });
                 let result = if matches {
-                    current.take().unwrap().stop().await
+                    current.take().unwrap().0.stop().await
                 } else {
                     Ok(())
                 };
@@ -315,7 +346,7 @@ async fn serve_commands(
             }
         }
     }
-    if let Some(instance) = current {
+    if let Some((instance, _hold)) = current {
         instance.stop().await?;
     }
     Ok(())

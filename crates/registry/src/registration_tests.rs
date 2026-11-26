@@ -222,6 +222,13 @@ async fn idempotent_registration_reentrant_removal_and_stale_owner() {
         .await
         .unwrap()
         .unwrap();
+    timeout(Duration::from_secs(1), async {
+        while registry.worker_count() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("unregister retires the service command worker");
     assert!(client.get(kv.key(), None).await.unwrap().kvs().is_empty());
     assert!(matches!(
         registry.register(opts.clone()).await.unwrap(),
