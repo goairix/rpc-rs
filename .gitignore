@@ -1,0 +1,13 @@
+# IDE
+/.idea
+/.vscode
+
+.env
+.env.*
+
+.DS_Store
+*/.DS_Store
+
+# AI Coding
+.codex
+.cluade
