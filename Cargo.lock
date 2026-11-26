@@ -844,6 +844,7 @@ dependencies = [
  "hyper-util",
  "rpc-registry",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -903,8 +904,12 @@ dependencies = [
 name = "rpc-rs"
 version = "0.1.0"
 dependencies = [
+ "http",
  "prost",
  "prost-types",
+ "rpc-discovery",
+ "rpc-governance",
+ "rpc-registry",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -912,6 +917,7 @@ dependencies = [
  "tonic",
  "tonic-health",
  "tonic-reflection",
+ "tower",
 ]
 
 [[package]]

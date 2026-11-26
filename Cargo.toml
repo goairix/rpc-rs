@@ -18,3 +18,8 @@ tokio = { version = "1", features = ["macros", "rt", "net", "signal", "sync"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = "0.7"
 thiserror = "2"
+rpc-registry = { path = "crates/registry" }
+rpc-governance = { path = "crates/governance" }
+rpc-discovery = { path = "crates/discovery" }
+tower = "0.5"
+http = "1"
