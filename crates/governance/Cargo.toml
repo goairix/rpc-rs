@@ -4,8 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bytes = "1"
+http = "1"
+http-body = "1"
+futures-util = "0.3"
+opentelemetry = { version = "0.31", default-features = false, features = ["metrics"] }
+tower = "0.5"
+tracing = "0.1"
 tokio = { version = "1", features = ["time"] }
 tonic = "0.14"
 
 [dev-dependencies]
+http-body-util = "0.1"
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["metrics", "testing"] }
 tokio = { version = "1", features = ["macros", "test-util", "rt"] }
