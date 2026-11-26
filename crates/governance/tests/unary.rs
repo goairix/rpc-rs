@@ -156,3 +156,51 @@ async fn half_open_cancellation_and_late_results() {
         .await
         .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn cancellation_during_backoff_prevents_replay() {
+    let policy = UnaryPolicy::default().with_retry(RetryPolicy::default());
+    let mut attempts = 0;
+    let call = policy.call(Request::new(()), None, |_| {
+        attempts += 1;
+        ready(Err::<(), _>(Status::unavailable("again")))
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), call)
+            .await
+            .is_err()
+    );
+    advance(Duration::from_secs(5)).await;
+    assert_eq!(attempts, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn circuit_classifies_one_outcome_per_logical_call() {
+    let policy = UnaryPolicy::default()
+        .with_retry(RetryPolicy::default())
+        .with_breaker(CircuitBreaker::new(|code| code != Code::InvalidArgument));
+
+    for _ in 0..10 {
+        let failure = policy
+            .call(Request::new(()), None, |_| {
+                ready(Err::<(), _>(Status::invalid_argument("business error")))
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code(), Code::InvalidArgument);
+    }
+    for _ in 0..5 {
+        let mut attempts = 0;
+        let failure = policy
+            .call(Request::new(()), None, |_| {
+                attempts += 1;
+                ready(Err::<(), _>(Status::internal("upstream error")))
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code(), Code::Internal);
+        assert_eq!(attempts, 3);
+    }
+    let result = policy.call(Request::new(()), None, |_| ready(Ok(()))).await;
+    assert_eq!(result.unwrap_err().code(), Code::Unavailable);
+}
