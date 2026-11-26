@@ -220,8 +220,8 @@ where
     Ok(())
 }
 
-fn config() -> Result<rpc_rs::registry::EtcdConfig, Error> {
-    Ok(rpc_rs::registry::EtcdConfig {
+fn config() -> Result<rpc_rs::naming::etcd::EtcdConfig, Error> {
+    Ok(rpc_rs::naming::etcd::EtcdConfig {
         endpoints: vec![std::env::var("ETCD_ENDPOINT")?],
         namespace: std::env::var("RPC_NAMESPACE")?,
         ..Default::default()
@@ -231,21 +231,20 @@ fn config() -> Result<rpc_rs::registry::EtcdConfig, Error> {
 /// Serve the same generated implementation with optional discovery registration.
 async fn serve(addr: &str, id: &str) -> Result<(), Error> {
     use rpc_rs::{
-        registry::{EtcdRegistry, RegistrationOptions, Registry},
+        naming::{
+            RegistrationOptions, Registry, etcd::EtcdRegistry, static_registry::StaticRegistry,
+        },
         server::RpcServer,
     };
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let registry = if std::env::var_os("ETCD_ENDPOINT").is_some() {
-        Some(EtcdRegistry::connect(config()?).await?)
-    } else {
-        None
-    };
-    let backend: Option<std::sync::Arc<dyn Registry>> = match std::env::var_os("RPC_STATIC_FILE") {
-        Some(path) => Some(std::sync::Arc::new(
-            rpc_rs::static_registry::StaticRegistry::from_file(path)?,
-        )),
-        None => registry.clone().map(|r| std::sync::Arc::new(r) as _),
-    };
+    let registry: Option<std::sync::Arc<dyn Registry>> =
+        if let Some(path) = std::env::var_os("RPC_STATIC_FILE") {
+            Some(std::sync::Arc::new(StaticRegistry::from_file(path)?))
+        } else if std::env::var_os("ETCD_ENDPOINT").is_some() {
+            Some(std::sync::Arc::new(EtcdRegistry::connect(config()?).await?))
+        } else {
+            None
+        };
     let mut builder = RpcServer::default()
         .with_reflection()
         .with_descriptor(tonic::include_file_descriptor_set!("echo_descriptor"));
@@ -260,7 +259,7 @@ async fn serve(addr: &str, id: &str) -> Result<(), Error> {
             }),
             RegistrationOptions::default(),
         )
-        .start(listener, backend);
+        .start(listener, registry.clone());
     // The harness terminates this peer with SIGTERM; wait for lease revocation before exiting.
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = server
@@ -285,7 +284,7 @@ async fn discovered(mode: &str) -> Result<(), Error> {
     let go_framework = static_file.is_none();
     let mut discovery = match static_file {
         Some(path) => {
-            let directory = rpc_rs::static_registry::StaticRegistry::from_file(path)?;
+            let directory = rpc_rs::naming::static_registry::StaticRegistry::from_file(path)?;
             Discovery::connect(&directory, "interop.Echo", options).await?
         }
         None => Discovery::connect(&config()?, "interop.Echo", options).await?,

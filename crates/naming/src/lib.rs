@@ -7,5 +7,7 @@ mod resolver;
 pub mod static_registry;
 
 pub use metadata::{RegistrationOptions, ServiceMetadata, ServiceStatus};
-pub use registry::{Registration, RegistrationHandle, Registry, RegistryError};
+pub use registry::{
+    Registration, RegistrationHandle, Registry, RegistryError, StatusChangeCallback,
+};
 pub use resolver::{DiscoveryError, DiscoverySubscription, Resolver, Snapshot};

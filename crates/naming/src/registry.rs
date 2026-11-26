@@ -1,4 +1,9 @@
-use crate::RegistrationOptions;
+use crate::{RegistrationOptions, ServiceMetadata};
+use std::{future::Future, pin::Pin, sync::Arc};
+
+/// Receives an owned copy of an externally updated instance record.
+pub type StatusChangeCallback =
+    Arc<dyn Fn(ServiceMetadata) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// Identifies exactly the registration this caller created.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,6 +30,13 @@ pub trait Registry: Send + Sync + 'static {
     async fn register(&self, options: RegistrationOptions) -> Result<Registration, RegistryError>;
     /// Withdraw exactly the registration represented by this handle.
     async fn unregister_handle(&self, handle: &RegistrationHandle) -> Result<(), RegistryError>;
+    /// Observe external metadata changes. Immutable directories never emit these events.
+    fn on_status_change(&self, _callback: StatusChangeCallback) {}
+    /// Release backend resources after all servers sharing this registry have stopped.
+    /// Backends without shared resources can use the default implementation.
+    async fn close(&self) -> Result<(), RegistryError> {
+        Ok(())
+    }
 }
 
 /// A backend, lifecycle or configuration error.

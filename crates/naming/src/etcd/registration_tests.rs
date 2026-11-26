@@ -199,18 +199,19 @@ async fn idempotent_registration_reentrant_removal_and_stale_owner() {
     let mut value: ServiceMetadata = serde_json::from_slice(kv.value()).unwrap();
     let (tx, mut rx) = mpsc::channel(1);
     let observer_registry = registry.downgrade();
-    registry.on_status_change(move |record| {
+    let backend: &dyn crate::Registry = &registry;
+    backend.on_status_change(Arc::new(move |record| {
         let nested = observer_registry.clone();
         let tx = tx.clone();
-        async move {
+        Box::pin(async move {
             if record.status == ServiceStatus::Down
                 && let Some(nested) = nested.upgrade()
             {
                 nested.unregister(&record.service_name).await.unwrap();
                 tx.send(()).await.unwrap();
             }
-        }
-    });
+        })
+    }));
     value.status = ServiceStatus::Down;
     client
         .put(
@@ -249,7 +250,7 @@ async fn idempotent_registration_reentrant_removal_and_stale_owner() {
     // Stop during the recovery backoff; close must not recreate the revoked key.
     client.lease_revoke(entries.kvs()[0].lease()).await.unwrap();
     let observer_registry = registry.downgrade();
-    let (a, b) = tokio::join!(registry.close(), registry.close());
+    let (a, b) = tokio::join!(backend.close(), backend.close());
     a.unwrap();
     b.unwrap();
     assert!(observer_registry.upgrade().is_none());

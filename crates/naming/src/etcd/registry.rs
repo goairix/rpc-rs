@@ -1,4 +1,5 @@
 use super::{EtcdConfig, instance::Instance};
+use crate::StatusChangeCallback;
 use crate::{
     Registration, RegistrationHandle, RegistrationOptions, Registry, RegistryError, ServiceMetadata,
 };
@@ -6,7 +7,6 @@ use etcd_client::Client;
 use std::{
     collections::HashMap,
     future::Future,
-    pin::Pin,
     sync::{Arc, Mutex, Weak},
 };
 use tokio::{
@@ -15,8 +15,6 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-type Callback =
-    Arc<dyn Fn(ServiceMetadata) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 type Completion = watch::Receiver<Option<Result<(), String>>>;
 
 #[tonic::async_trait]
@@ -26,6 +24,15 @@ impl Registry for EtcdRegistry {
     }
     async fn unregister_handle(&self, h: &RegistrationHandle) -> Result<(), RegistryError> {
         EtcdRegistry::unregister_handle(self, h).await
+    }
+    fn on_status_change(&self, callback: StatusChangeCallback) {
+        let mut callbacks = self.0.callbacks.lock().unwrap();
+        if !self.0.stop.is_cancelled() {
+            callbacks.push(callback);
+        }
+    }
+    async fn close(&self) -> Result<(), RegistryError> {
+        EtcdRegistry::close(self).await
     }
 }
 
@@ -56,7 +63,7 @@ struct Inner {
     config: Arc<EtcdConfig>,
     state: Mutex<State>,
     stop: CancellationToken,
-    callbacks: Arc<Mutex<Vec<Callback>>>,
+    callbacks: Arc<Mutex<Vec<StatusChangeCallback>>>,
     updates: mpsc::Sender<ServiceMetadata>,
 }
 
@@ -89,7 +96,7 @@ impl EtcdRegistry {
     /// Connect to etcd and initialize independent per-service registration workers on demand.
     pub async fn connect(config: EtcdConfig) -> Result<Self, RegistryError> {
         let client = config.connect_client().await?;
-        let callbacks = Arc::new(Mutex::new(Vec::<Callback>::new()));
+        let callbacks = Arc::new(Mutex::new(Vec::<StatusChangeCallback>::new()));
         let stop = CancellationToken::new();
         let (updates, mut receiver) = mpsc::channel::<ServiceMetadata>(16);
         let token = stop.clone();
@@ -152,10 +159,7 @@ impl EtcdRegistry {
         F: Fn(ServiceMetadata) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        let mut callbacks = self.0.callbacks.lock().unwrap();
-        if !self.0.stop.is_cancelled() {
-            callbacks.push(Arc::new(move |meta| Box::pin(callback(meta))));
-        }
+        Registry::on_status_change(self, Arc::new(move |meta| Box::pin(callback(meta))));
     }
 
     #[cfg(test)]
