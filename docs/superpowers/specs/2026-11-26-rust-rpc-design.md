@@ -1,6 +1,6 @@
 # Rust RPC 框架兼容设计
 
-状态：待审阅；实现尚未开始。
+状态：已确认，进入实施规划。
 
 ## 目标与事实来源
 
@@ -65,8 +65,8 @@ Go 包是功能对标，不是 Rust 内部架构、公开 API 或实现算法的
 - `balancer`：`pick_first`、`round_robin`、`weighted_round_robin`；默认轮询。
 - `server`：组合生成的 tonic 服务、内置治理层、健康检查和可选反射，
   提供异步 serve、显式关闭和优雅退出能力。
-- `discovery`：按服务名创建可交给 tonic 生成客户端的传输服务；配置
-  负载均衡、TLS、keepalive、可选重试和熔断。
+- `discovery` 按服务名创建可交给 tonic 生成客户端的传输服务，负责选址、TLS 和
+  keepalive。客户端的强类型 unary 调用入口组合可选重试和熔断。
 - `middleware`、`limiter`、`retry`、`breaker`：可组合的服务治理组件。
 - `errors`、`logger`、`metrics`、`health`：标准状态、tracing 日志、
   OpenTelemetry 指标与标准健康服务。
@@ -105,8 +105,11 @@ properties 编码产生的 JSON null，缺失字段采用兼容默认值，未�
 2. 一个进程注册生命周期内 instance ID、key、注册时间不变。
 3. Grant → 带 lease 的 Put → KeepAlive；建立过程中失败尽力撤销新 lease。
 4. 丢失租约后，以 100ms 起步、最大 5s 的退避恢复同一 key；复用唯一 client。
-5. 监听自身 key 的外部修改，保留 service_name、address、instance_id、
-   register_time，其余字段进入本地缓存供恢复使用。回调收到独立数据副本。
+5. 保存首次带租约 Put 的响应 revision R，从 R + 1 监听自身 key。处理完一批事件后
+   推进游标，watch 断开时从游标续订。遇到 compaction 时线性 Get 自身 key，
+   若值存在则更新缓存，再从 Get 响应头的 revision + 1 续订。租约恢复沿用同一监听任务。
+   外部更新保留本地 service_name、address、instance_id、register_time，其余字段写入
+   缓存供租约恢复使用。回调收到独立数据副本。
 6. 回调允许重入注册/注销；不持内部锁执行回调，不让回调等待自身任务退出。
 7. 注销/关闭先禁止恢复，再取消并等待后台任务，最后撤销 lease；关闭幂等。
 8. Drop 提供取消兜底，确定性清理由显式异步 close 完成；不依赖进程退出清理。
@@ -121,7 +124,11 @@ properties 编码产生的 JSON null，缺失字段采用兼容默认值，未�
 
 缺失或非正权重按 100 处理；格式错误的数据应记录并跳过，不能中止整个发现。
 权重更新不重建未变更地址的连接，地址新增/删除更新连接集合。
-优先选择可用连接，全部不可用时返回真实传输失败，不伪装成功或就绪。
+每个 `up` 实例在完成 HTTP/2 连接后进入可选集合。连接驱动报告断开或连接失败时，
+摘除对应连接，保存传输错误，并在后台退避重连。重连成功且该实例仍为 `up` 时重新加入；
+地址变更或实例下线后，丢弃旧连接的迟到通知。三种策略均从当前可选集合中选址。
+Channel 的 `poll_ready` 只用于发送背压。业务 RPC 返回的 `UNAVAILABLE` 仅参与该次
+调用的容错判断。连接全部失效时，调用返回 `UNAVAILABLE` 并保留连接失败原因。
 加权策略使用平滑加权轮询，小权重可预计算；大权重不得通过粗略整数缩放扭曲比例，
 也不得按未经限制的权重总和分配内存。请求选择路径避免全局互斥锁。
 
@@ -141,7 +148,10 @@ Unknown。该行为需在 README 与互通测试中明确，不能声称自定�
 业务错误迁移建议由业务应用映射到 InvalidArgument、FailedPrecondition、
 AlreadyExists 等适当标准状态；本库不根据错误消息猜测错误类别。
 
-重试仅自动应用于 unary：默认总尝试 3 次，初始等待 100ms、最大 1s、倍数 2，
+在 protobuf 消息编码前，由强类型 unary 调用入口执行重试。调用方提供可重建的请求
+和生成客户端的 unary 方法。每次尝试从原始消息和 metadata 构造新请求，按同一
+绝对截止时间设置剩余超时，再调用该方法。三种流式方法直接使用生成客户端。
+默认总尝试 3 次，初始等待 100ms、最大 1s、倍数 2，
 可重试码为 Unavailable、DeadlineExceeded、ResourceExhausted、Internal。
 总次数为 0 时只尝试一次。退避等待支持取消，deadline 约束整个调用，
 不重放已经消费的流。重试为显式启用，调用方负责方法幂等性。
@@ -179,15 +189,34 @@ collector endpoint 不暗示自动初始化 exporter，导出由应用接入配�
   背压和消费者提前结束流时资源正确释放，不产生失控任务或无界消息缓存。
 - 真实 etcd 集成测试覆盖幂等注册、租约撤销及恢复、稳定身份、治理更新、
   状态回调重入、发现增删和关闭后不再恢复。使用唯一 namespace，清理仅限测试资源。
+- 在首次 Put 已完成、注册端尚未发起 watch 的窗口内，用原 lease 将实例改为
+  `down`。分别覆盖可回放历史和起始 revision 已被压缩两种情形。等治理回调
+  确认收到 `down` 后撤销租约，验证恢复的 key、instance_id 和 `down` 状态。
+  执行 compaction 的用例使用独立临时 etcd，因为 compaction 作用于整个集群。
 - 同一份 proto 提供 Go 和 Rust 示例及一键互通命令。Go 端使用 `../rpc`
   框架而非仅裸 grpc-go；测试夹具放在当前 Rust 仓库，不更改 Go 仓库。
-- 双向验证 unary、三种 streaming、metadata、deadline、标准错误码，以及
-  Go 非标准码被 Rust 识别为 Unknown 的明确边界。
+- 双向验证 unary、三种 streaming、metadata 和 deadline。错误用例使用下表预期，
+  通过两端框架的正常服务入口调用。流式用例读取至流结束并断言最终状态。
+- 启用 Rust unary 重试，让服务端第一次返回 `UNAVAILABLE`、第二次成功；
+  验证收到两次相同消息和 metadata，且第二次超时预算已扣除退避耗时。
+  同一服务的服务端流方法首次返回 `UNAVAILABLE` 时，验证调用次数为一。
 - 双向通过 etcd 发现服务；验证 up/down、权重修改及注销后的路由变化。
+- 对三种策略分别启动两个可用实例，保持两条 etcd 记录均为 `up`，断开当前被选
+  实例的连接并关闭端口。关闭 unary 重试，等待摘除后验证新请求全部到达健康实例。
+  重开端口后验证重连成功；轮询策略恢复分流，`pick_first` 在当前连接也断开时可切回。
 - 执行 cargo fmt --check、cargo clippy --all-targets -- -D warnings、cargo test，
   以及真实 etcd 与 Go/Rust 互通测试；验证优雅停机后后台任务与监听端口释放。
 - README 列明接入、proto 生成、配置、所有权/关闭、验证命令及兼容差异。
   未实际运行的验证不得标记为通过。
+
+| 客户端 → 服务端 | 服务端行为 | 客户端预期状态 |
+|---|---|---|
+| Go → Rust | unary handler 返回参数错误，或流以参数错误结束 | `INVALID_ARGUMENT` |
+| Go → Rust | unary 请求触发 Rust 限流 | `RESOURCE_EXHAUSTED` |
+| Rust → Go | unary handler 返回 `status.Error(codes.InvalidArgument, ...)` | `UNKNOWN`，由 Go 默认 unary 错误拦截器转换 |
+| Rust → Go | unary 请求触发 Go 内置限流 | `UNKNOWN`，Go 外层错误拦截器转换限流错误 |
+| Rust → Go | unary handler 返回 Go 框架业务码 11001 | `UNKNOWN`，tonic 解析非标准码的结果 |
+| Rust → Go | 流式 handler 返回 `status.Error(codes.InvalidArgument, ...)` | `INVALID_ARGUMENT`，Go 流式链保留该状态 |
 
 ## 参考
 
