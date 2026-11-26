@@ -12,6 +12,9 @@ pub struct RetryPolicy {
     pub initial_backoff: Duration,
     /// Upper bound on the delay between two attempts.
     pub max_backoff: Duration,
+    /// Factor applied after each wait. Defaults to 2. Nonpositive values and
+    /// NaN give zero delay on subsequent retries. Growth is capped by max_backoff.
+    pub backoff_multiplier: f64,
     /// Standard statuses eligible for replay.
     pub retryable_codes: Vec<Code>,
 }
@@ -22,6 +25,7 @@ impl Default for RetryPolicy {
             max_attempts: 3,
             initial_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(1),
+            backoff_multiplier: 2.0,
             retryable_codes: vec![
                 Code::Unavailable,
                 Code::DeadlineExceeded,
@@ -109,7 +113,10 @@ impl UnaryPolicy {
                     return result;
                 }
                 sleep(backoff).await;
-                backoff = backoff.saturating_mul(2).min(retry.max_backoff);
+                let seconds = backoff.as_secs_f64() * retry.backoff_multiplier.max(0.0);
+                backoff = Duration::try_from_secs_f64(seconds.max(0.0))
+                    .unwrap_or(Duration::MAX)
+                    .min(retry.max_backoff);
             }
         };
         let result = match deadline {

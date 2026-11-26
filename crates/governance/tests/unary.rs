@@ -286,3 +286,24 @@ async fn excluded_errors_preserve_closed_and_half_open_counts() {
     assert!(futures_util::poll!(&mut normal).is_pending());
     call(Code::Ok).await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn fractional_retry_multiplier_respects_cap() {
+    let policy = UnaryPolicy::default().with_retry(RetryPolicy {
+        max_attempts: 5,
+        initial_backoff: Duration::from_millis(40),
+        max_backoff: Duration::from_millis(80),
+        backoff_multiplier: 1.5,
+        ..Default::default()
+    });
+    let mut elapsed = Vec::new();
+    let start = Instant::now();
+    let result = policy
+        .call(Request::new(()), None, |_| {
+            elapsed.push(start.elapsed().as_millis());
+            ready(Err::<(), _>(Status::unavailable("again")))
+        })
+        .await;
+    assert_eq!(result.unwrap_err().code(), Code::Unavailable);
+    assert_eq!(elapsed, [0, 40, 100, 180, 260]);
+}
