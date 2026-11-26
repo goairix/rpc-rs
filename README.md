@@ -78,7 +78,7 @@ discovery.close().await;
 let reply = response?.into_inner();
 ```
 
-发现连接异步建立。第一次调用若需要等待就绪，给等待设置截止时间，并观察 `ready_count()`；无可用连接时生成客户端收到 `UNAVAILABLE`。保留 discovery 与客户端相同的使用寿命，克隆的客户端共享连接。TLS 可在 `DiscoveryOptions::tls` 中配置可信 CA、服务名和客户端证书。默认负载均衡是轮询，另支持优先保持首个可用连接和平滑加权轮询。
+发现连接异步建立，每条新连接通过一次有超时限制的标准 Health/Watch 请求确认对端能返回 HTTP/2 gRPC 响应。第一次调用若需要等待就绪，给等待设置截止时间，并观察 `ready_count()`；无可用连接时生成客户端收到 `UNAVAILABLE`。保留 discovery 与客户端相同的使用寿命，克隆的客户端共享连接。TLS 可在 `DiscoveryOptions::tls` 中配置可信 CA、服务名和客户端证书。默认负载均衡是轮询，另支持优先保持首个可用连接和平滑加权轮询。
 
 重试与熔断由应用在强类型 unary 入口启用。仅对可安全重放的方法启用重试，整个调用共享一个截止时间。流式调用直接使用生成客户端。服务端与客户端示例见 [Rust 夹具](interop/rust/src/main.rs) 和 [Go 夹具](interop/go/main.go)。
 
@@ -98,3 +98,12 @@ interop/run.sh all
 ```
 
 TLS 测试需要 `openssl`。额外的 etcd 生命周期、watch 与故障切换用例可单独运行。设置 `RPC_ETCD_ENDPOINT` 指向专用测试 etcd，设置 `ETCD_BIN` 为 etcd 可执行文件后运行 `cargo test --workspace -- --ignored`。需要压缩历史的用例会启动自己的 etcd。
+
+若想单独观察两个进程，先构建 Rust 夹具，再在不同终端运行以下两条命令。对调测试时，把第一条换成 Go 的 serve，第二条换成 Rust 的 check。
+
+```sh
+cargo run -p rpc-interop -- serve 127.0.0.1:50051 rust
+(cd interop/go && GOWORK=off go run . check 127.0.0.1:50051)
+```
+
+通过服务名接入时，给两个进程设置相同的 `ETCD_ENDPOINT` 和 `RPC_NAMESPACE`，将客户端的地址参数改为 `discovery`。
