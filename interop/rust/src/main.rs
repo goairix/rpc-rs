@@ -88,7 +88,7 @@ fn msg(sequence: i32, value: &str) -> Message {
 
 async fn check<T>(mut client: EchoClient<T>, go_framework: bool) -> Result<(), Error>
 where
-    T: tonic::client::GrpcService<tonic::body::Body>,
+    T: tonic::client::GrpcService<tonic::body::Body> + Clone,
     T::Error: Into<tonic::codegen::StdError>,
     T::ResponseBody: tonic::codegen::Body<Data = tonic::codegen::Bytes> + Send + 'static,
     <T::ResponseBody as tonic::codegen::Body>::Error: Into<tonic::codegen::StdError> + Send,
@@ -140,14 +140,101 @@ where
     }
     let mut wait = Request::new(msg(0, "wait"));
     wait.set_timeout(Duration::from_millis(80));
-    let err = tokio::time::timeout(Duration::from_secs(2), client.say(wait))
-        .await?
+    let err = rpc_rs::governance::UnaryPolicy::default()
+        .call(wait, None, |r| {
+            let mut client = client.clone();
+            async move { client.say(r).await }
+        })
+        .await
         .unwrap_err();
-    assert!(matches!(
-        err.code(),
-        tonic::Code::DeadlineExceeded | tonic::Code::Cancelled
-    ));
+    assert_eq!(err.code(), tonic::Code::DeadlineExceeded, "{err:?}");
     println!("{}", echoed.instance);
+    Ok(())
+}
+
+fn config() -> Result<rpc_rs::registry::EtcdConfig, Error> {
+    Ok(rpc_rs::registry::EtcdConfig {
+        endpoints: vec![std::env::var("ETCD_ENDPOINT")?],
+        namespace: std::env::var("RPC_NAMESPACE")?,
+        ..Default::default()
+    })
+}
+
+/// Serve the same generated implementation with optional discovery registration.
+async fn serve(addr: &str, id: &str) -> Result<(), Error> {
+    use rpc_rs::{
+        registry::{EtcdRegistry, RegistrationOptions},
+        server::RpcServer,
+    };
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let registry = if std::env::var_os("ETCD_ENDPOINT").is_some() {
+        Some(EtcdRegistry::connect(config()?).await?)
+    } else {
+        None
+    };
+    let mut builder = RpcServer::default()
+        .with_reflection()
+        .with_descriptor(tonic::include_file_descriptor_set!("echo_descriptor"));
+    if std::env::var_os("RPC_LIMIT_ALL").is_some() {
+        builder = builder.with_limiter(rpc_rs::governance::TokenBucket::new(1.0, 0));
+    }
+    let server = builder
+        .add_service(
+            EchoServer::new(Peer(id.into())),
+            RegistrationOptions::default(),
+        )
+        .start(
+            listener,
+            registry.clone().map(|r| std::sync::Arc::new(r) as _),
+        );
+    // The harness terminates this peer with SIGTERM; wait for lease revocation before exiting.
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let result = server
+        .until(async {
+            term.recv().await;
+        })
+        .await;
+    if let Some(r) = registry {
+        r.close().await?;
+    }
+    result
+}
+
+async fn discovered(mode: &str) -> Result<(), Error> {
+    use rpc_rs::discovery::{Discovery, DiscoveryOptions, LbPolicy};
+    use std::io::BufRead;
+    let options = DiscoveryOptions {
+        policy: LbPolicy::WeightedRoundRobin,
+        ..Default::default()
+    };
+    let mut discovery = Discovery::connect(&config()?, "interop.Echo", options).await?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while discovery.ready_count() == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let mut client = EchoClient::new(discovery.service());
+    match mode {
+        "check" => check(client, true).await?,
+        "limited" => assert_eq!(
+            client.say(msg(0, "test")).await.unwrap_err().code(),
+            tonic::Code::Unknown
+        ),
+        "sample" => {
+            // Keep a single client and watch active across governance updates.
+            for line in std::io::stdin().lock().lines() {
+                let n: usize = line?.parse()?;
+                let mut ids = Vec::new();
+                for _ in 0..n {
+                    ids.push(client.say(msg(0, "sample")).await?.into_inner().instance);
+                }
+                println!("{}", ids.join(","));
+            }
+        }
+        _ => return Err("unexpected mode".into()),
+    }
+    discovery.close().await;
     Ok(())
 }
 
@@ -155,16 +242,11 @@ where
 async fn main() -> Result<(), Error> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.as_slice() {
-        [mode, addr, id] if mode == "serve" => {
-            tonic::transport::Server::builder()
-                .add_service(EchoServer::new(Peer(id.clone())))
-                .serve(addr.parse()?)
-                .await?;
-        }
+        [mode, addr, id] if mode == "serve" => serve(addr, id).await,
+        [mode, target] if target == "discovery" => discovered(mode).await,
         [mode, addr] if mode == "check" => {
-            check(EchoClient::connect(format!("http://{addr}")).await?, false).await?;
+            check(EchoClient::connect(format!("http://{addr}")).await?, false).await
         }
-        _ => return Err("usage: serve ADDRESS ID | check ADDRESS".into()),
+        _ => Err("usage: serve ADDRESS ID | check ADDRESS | check|limited|sample discovery".into()),
     }
-    Ok(())
 }

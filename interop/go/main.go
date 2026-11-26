@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	rpc "github.com/goairix/rpc"
 	"github.com/goairix/rpc/config"
 	rpcerr "github.com/goairix/rpc/errors"
+	"github.com/goairix/rpc/limiter"
 	"github.com/goairix/rpc/logger"
 	meta "github.com/goairix/rpc/metadata"
 	naming "github.com/goairix/rpc/naming/etcd"
@@ -124,7 +127,11 @@ func serve(target, id string) error {
 		return err
 	}
 	defer reg.Close()
-	server := rpc.NewServer(&conf, reg)
+	var opts []rpc.ServerOption
+	if os.Getenv("RPC_LIMIT_ALL") != "" {
+		opts = append(opts, rpc.WithServerLimiter(limiter.NewTokenBucketLimiter(1, 0)))
+	}
+	server := rpc.NewServer(&conf, reg, opts...)
 	if err := server.RegisterService(svc, pb.RegisterEchoServer); err != nil {
 		return err
 	}
@@ -249,21 +256,35 @@ func run() error {
 	if mode == "check" {
 		return check(c)
 	}
-	if mode == "sample" {
-		n, err := strconv.Atoi(os.Args[3])
-		if err != nil {
-			return err
-		}
-		for i := 0; i < n; i++ {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			m, e := c.Say(ctx, &pb.Message{}, grpc.WaitForReady(true))
-			cancel()
-			if e != nil {
-				return e
-			}
-			fmt.Println(m.Instance)
+	if mode == "limited" {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		_, err := c.Say(ctx, &pb.Message{}, grpc.WaitForReady(true))
+		if status.Code(err) != codes.ResourceExhausted {
+			return fmt.Errorf("expected resource exhausted: %v", err)
 		}
 		return nil
+	}
+	if mode == "sample" {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			n, err := strconv.Atoi(scanner.Text())
+			if err != nil {
+				return err
+			}
+			var ids []string
+			for i := 0; i < n; i++ {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				m, e := c.Say(ctx, &pb.Message{}, grpc.WaitForReady(true))
+				cancel()
+				if e != nil {
+					return e
+				}
+				ids = append(ids, m.Instance)
+			}
+			fmt.Println(strings.Join(ids, ","))
+		}
+		return scanner.Err()
 	}
 	return fmt.Errorf("unsupported mode %q", mode)
 }
