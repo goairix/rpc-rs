@@ -204,3 +204,21 @@ async fn circuit_classifies_one_outcome_per_logical_call() {
     let result = policy.call(Request::new(()), None, |_| ready(Ok(()))).await;
     assert_eq!(result.unwrap_err().code(), Code::Unavailable);
 }
+
+#[tokio::test(start_paused = true)]
+async fn request_timeout_bounds_all_attempts() {
+    let policy = UnaryPolicy::default().with_retry(RetryPolicy::default());
+    for deadline in [None, Some(Instant::now() + Duration::from_secs(10))] {
+        let mut request = Request::new(());
+        request.set_timeout(Duration::from_millis(50));
+        let mut attempts = 0;
+        let result = policy
+            .call(request, deadline, |_| {
+                attempts += 1;
+                ready(Err::<(), _>(Status::unavailable("retry later")))
+            })
+            .await;
+        assert_eq!(attempts, 1);
+        assert_eq!(result.unwrap_err().code(), Code::DeadlineExceeded);
+    }
+}
