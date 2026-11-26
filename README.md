@@ -1,0 +1,100 @@
+# rpc-rs
+
+基于 tonic 的 Rust RPC 库。Go 和 Rust 服务使用同一份 protobuf 定义，通过 etcd 注册、发现并调用对方。库入口是 `rpc_rs`，生成的 tonic 服务和客户端可以直接接入。
+
+## 跑一次双向调用
+
+将 Go 框架放在相邻的 `../rpc`。从本仓库根目录运行：
+
+```sh
+interop/run.sh direct
+interop/run.sh all
+```
+
+`direct` 启动两种语言的测试进程，通过 TCP 直连。 `all` 启动专用 etcd 和真实的框架服务端，用服务名进行发现，运行四种 RPC、标准错误、metadata、超时、取消、限流及权重热更新用例。每个方向使用两个同名实例验证加权分流，脚本退出时关闭子进程并清理临时目录。
+
+需要 Rust/Cargo、Go、protoc、Python 3 和 Unix shell；`all` 还需要 etcd v3 服务端。可通过 `ETCD_BIN=/absolute/path/to/etcd interop/run.sh all` 指定可执行文件。已验证的组合为 Rust 1.95、Go 1.25.6、tonic 0.14.6、protoc 3.20.3 和 etcd 3.6.5。Go 测试桩已随仓库提供，Rust 桩在构建夹具时生成。
+
+业务 proto 的 package、service、方法名、流类型及消息字段号在两端保持一致。修改测试 proto 后，使用已安装的 `protoc-gen-go` 和 `protoc-gen-go-grpc` 更新 Go 桩：
+
+```sh
+protoc -I interop/proto --go_out=interop/go --go_opt=module=example.org/rpc-interop \
+  --go-grpc_out=interop/go --go-grpc_opt=module=example.org/rpc-interop interop/proto/echo.proto
+cargo build -p rpc-interop
+```
+
+## 接入 Rust 服务
+
+应用通过路径依赖引用本库，例如 `rpc-rs = { path = "../rpc-rs" }`。在业务 crate 的 build.rs 中用 tonic-prost-build 编译 proto，同时输出 file descriptor set。下面使用测试 proto 生成的 `EchoServer` 和应用自己的 `EchoImpl`。
+
+```rust
+use rpc_rs::{
+    registry::{EtcdConfig, EtcdRegistry, RegistrationOptions},
+    server::RpcServer,
+};
+use std::sync::Arc;
+
+let config = EtcdConfig::default();
+let registry = Arc::new(EtcdRegistry::connect(config).await?);
+let listener = tokio::net::TcpListener::bind("127.0.0.1:50051").await?;
+let server = RpcServer::default()
+    .with_descriptor(tonic::include_file_descriptor_set!("echo_descriptor"))
+    .add_service(EchoServer::new(EchoImpl), RegistrationOptions::default())
+    .start(listener, Some(registry.clone()));
+
+let result = server.until(async { tokio::signal::ctrl_c().await.ok(); }).await;
+registry.close().await?;
+result?;
+```
+
+默认使用 protobuf 全限定服务名和监听器的实际地址注册。监听 `0.0.0.0` 或位于容器内时，通过 `RegistrationOptions::address` 填入客户端可达的主机名与端口。可多次调用 `add_service`。服务端在停机时注销自己创建的实例并排空在途请求；显式调用 `shutdown().await` 或等待 `until` 可获得清理结果。共享 registry 由其所有者最后关闭。
+
+标准健康检查随服务器启动。反射可用 `with_reflection()` 开启。反射与 `with_limiter(TokenBucket::new(rate, burst))` 均使用随服务桩生成的 descriptor。通过 `with_transport` 传入配置了 TLS 或 HTTP/2 keepalive 的 tonic Server。应用可用 `with_governance` 接入 OpenTelemetry meter 和业务错误日志分类；tracing subscriber、runtime 和 exporter 由应用初始化。
+
+## 客户端发现与容错
+
+```rust
+use rpc_rs::{
+    discovery::{Discovery, DiscoveryOptions, LbPolicy},
+    governance::{CircuitBreaker, RetryPolicy, UnaryPolicy},
+    registry::EtcdConfig,
+};
+use std::time::Duration;
+
+let cfg = EtcdConfig::default();
+let options = DiscoveryOptions { policy: LbPolicy::WeightedRoundRobin, ..Default::default() };
+let mut discovery = Discovery::connect(&cfg, "interop.Echo", options).await?;
+let client = EchoClient::new(discovery.service());
+let policy = UnaryPolicy::default()
+    .with_retry(RetryPolicy::default())
+    .with_breaker(CircuitBreaker::default());
+let mut request = tonic::Request::new(message);
+request.set_timeout(Duration::from_secs(2));
+let response = policy.call(request, None, |request| {
+    let mut client = client.clone();
+    async move { client.say(request).await }
+}).await;
+discovery.close().await;
+let reply = response?.into_inner();
+```
+
+发现连接异步建立。第一次调用若需要等待就绪，给等待设置截止时间，并观察 `ready_count()`；无可用连接时生成客户端收到 `UNAVAILABLE`。保留 discovery 与客户端相同的使用寿命，克隆的客户端共享连接。TLS 可在 `DiscoveryOptions::tls` 中配置可信 CA、服务名和客户端证书。默认负载均衡是轮询，另支持优先保持首个可用连接和平滑加权轮询。
+
+重试与熔断由应用在强类型 unary 入口启用。仅对可安全重放的方法启用重试，整个调用共享一个截止时间。流式调用直接使用生成客户端。服务端与客户端示例见 [Rust 夹具](interop/rust/src/main.rs) 和 [Go 夹具](interop/go/main.go)。
+
+## etcd 与错误语义
+
+默认 namespace 为 `grpc`，租约为 5 秒，etcd 操作超时为 2 秒。配置可传入 endpoints、用户名密码和 TLS。每条注册记录使用 `/<namespace>/<service_name>/<instance_id>`。管理端修改状态或权重时应保留原 lease。只有 `up` 且连接可用的实例参与选址。权重热更新复用连接，恢复租约时保留实例 ID 与最近观察到的治理状态。
+
+Rust 只使用标准 gRPC 状态码。Go 客户端能读到 Rust 返回的 `INVALID_ARGUMENT` 和 `RESOURCE_EXHAUSTED`。现有 Go 框架会把 unary handler 的普通错误和内层限流错误转换为 `UNKNOWN`；Go 自定义码在 tonic 中也表现为 `UNKNOWN`。Go 流式 handler 返回的标准码可以直接传递。完整预期见[兼容规格](docs/superpowers/specs/2026-11-26-rust-rpc-design.md)。
+
+## 开发验证
+
+```sh
+cargo fmt --all --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+interop/run.sh all
+```
+
+TLS 测试需要 `openssl`。额外的 etcd 生命周期、watch 与故障切换用例可单独运行。设置 `RPC_ETCD_ENDPOINT` 指向专用测试 etcd，设置 `ETCD_BIN` 为 etcd 可执行文件后运行 `cargo test --workspace -- --ignored`。需要压缩历史的用例会启动自己的 etcd。
