@@ -196,12 +196,39 @@ pub(crate) async fn connect(
             }))
         }
     });
-    let channel = tokio::time::timeout(
-        options.connect_timeout,
-        ep.connect_with_connector(connector),
-    )
+    let channel = tokio::time::timeout(options.connect_timeout, async {
+        let channel = ep.connect_with_connector(connector).await?;
+        confirm_peer(channel.clone()).await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(channel)
+    })
     .await??;
     Ok((channel, ended))
+}
+
+/// Tonic's eager connection sends the local HTTP/2 preface before it has seen
+/// the remote peer. Obtain actual response headers on this socket before routing.
+/// A streaming health watch avoids unary admission and is cancelled immediately
+/// after headers. Even UNIMPLEMENTED proves the peer answered on the wire.
+async fn confirm_peer(channel: Channel) -> Result<(), Box<dyn Error + Send + Sync>> {
+    // One uncompressed, zero-length protobuf HealthCheckRequest.
+    let frame = tonic::codegen::Bytes::from_static(&[0; 5]);
+    let request = Request::post("/grpc.health.v1.Health/Watch")
+        .version(http::Version::HTTP_2)
+        .header(http::header::CONTENT_TYPE, "application/grpc")
+        .header(http::header::TE, "trailers")
+        .body(Body::new(http_body_util::Full::new(frame)))?;
+    // A raw Channel preserves transport errors as Err, unlike a generated client
+    // which can produce an indistinguishable UNAVAILABLE from local failures.
+    let response = channel.oneshot(request).await?;
+    let grpc = response
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(['+', ';']).next() == Some("application/grpc"));
+    if response.version() != http::Version::HTTP_2 || !grpc {
+        return Err("peer did not return HTTP/2 gRPC response headers".into());
+    }
+    Ok(())
 }
 
 struct Observed {
@@ -280,6 +307,56 @@ mod tests {
             request_status(Box::new(io::Error::other("socket"))).code(),
             tonic::Code::Unavailable
         );
+    }
+
+    #[tokio::test]
+    async fn a_wire_error_on_the_streaming_probe_confirms_http2_readiness() {
+        // The health service is optional. A generated service rejecting the watch
+        // still proves readiness without consuming any unary handler capacity.
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = socket.local_addr().unwrap().to_string();
+        let (_reporter, health) = tonic_health::server::health_reporter();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let health = tonic::service::interceptor::InterceptedService::new(
+            health,
+            move |_: tonic::Request<()>| {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(Status::unimplemented("health watch unsupported"))
+            },
+        );
+        let (stop, done) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(health)
+                .serve_with_incoming_shutdown(
+                    tokio_stream::wrappers::TcpListenerStream::new(socket),
+                    async {
+                        let _ = done.await;
+                    },
+                )
+                .await
+                .unwrap();
+        });
+        let connected = connect(&address, &DiscoveryOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop(connected);
+        stop.send(()).unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn silent_tcp_listener_never_finishes_http2_setup() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let options = DiscoveryOptions {
+            connect_timeout: Duration::from_millis(120),
+            ..Default::default()
+        };
+        let result = connect(&address, &options).await;
+        assert!(result.is_err(), "a TCP-only listener cannot serve gRPC");
     }
 
     #[tokio::test]
