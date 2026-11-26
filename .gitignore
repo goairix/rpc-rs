@@ -11,3 +11,6 @@
 # AI Coding
 .codex
 .cluade
+
+# Rust build artifacts
+/target/
