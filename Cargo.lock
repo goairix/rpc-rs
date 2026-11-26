@@ -843,7 +843,7 @@ dependencies = [
  "http",
  "http-body-util",
  "hyper-util",
- "rpc-registry",
+ "rpc-naming",
  "serde_json",
  "tempfile",
  "thiserror",
@@ -853,7 +853,6 @@ dependencies = [
  "tonic",
  "tonic-health",
  "tower",
- "tracing",
 ]
 
 [[package]]
@@ -888,7 +887,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rpc-registry"
+name = "rpc-naming"
 version = "0.1.0"
 dependencies = [
  "etcd-client",
@@ -903,6 +902,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpc-registry"
+version = "0.1.0"
+dependencies = [
+ "rpc-naming",
+]
+
+[[package]]
 name = "rpc-rs"
 version = "0.1.0"
 dependencies = [
@@ -911,9 +917,8 @@ dependencies = [
  "prost-types",
  "rpc-discovery",
  "rpc-governance",
+ "rpc-naming",
  "rpc-registry",
- "serde",
- "serde_json",
  "thiserror",
  "tokio",
  "tokio-stream",

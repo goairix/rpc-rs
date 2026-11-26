@@ -1,12 +1,9 @@
 //! Revision-consistent service discovery and routing for tonic clients.
 mod balancer;
-mod resolver;
-pub use resolver::{DiscoveryError, DiscoverySubscription, Resolver, Snapshot};
-#[cfg(feature = "etcd")]
-mod subscription;
 pub use balancer::LbPolicy;
 #[cfg(feature = "etcd")]
-pub use subscription::Subscription;
+pub use rpc_naming::etcd::Subscription;
+pub use rpc_naming::{DiscoveryError, DiscoverySubscription, Resolver, Snapshot};
 mod discovery;
 mod transport;
 pub use discovery::Discovery;

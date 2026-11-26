@@ -1,7 +1,7 @@
 //! Typed service assembly and ownership of server registrations.
 use crate::{
     governance::{GovernanceLayer, TokenBucket},
-    registry::{Registration, RegistrationHandle, RegistrationOptions},
+    naming::{Registration, RegistrationHandle, RegistrationOptions},
 };
 use prost::Message;
 use std::{collections::HashSet, convert::Infallible, future::Future, sync::Arc};
@@ -13,7 +13,7 @@ use tower::Service;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-pub use crate::registry::Registry;
+pub use crate::naming::Registry;
 
 /// Builder for tonic routes, descriptors and optional service discovery.
 #[derive(Default)]

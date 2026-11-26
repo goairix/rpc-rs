@@ -4,7 +4,7 @@ set -eu
 cd "$(dirname "$0")/.."
 mode=${1:-all}
 case "$mode" in
-    registry) exec cargo test --locked -p rpc-registry -- --include-ignored ;;
+    registry) exec cargo test --locked -p rpc-naming -- --include-ignored ;;
     direct|static|all) ;;
     *) echo "usage: $0 direct|static|registry|all" >&2; exit 2 ;;
 esac

@@ -1,0 +1,20 @@
+[package]
+name = "rpc-naming"
+version = "0.1.0"
+edition = "2024"
+description = "Service naming contracts with static and etcd backends"
+
+[features]
+default = ["etcd"]
+etcd = ["dep:etcd-client", "dep:tokio-util", "dep:tracing", "dep:uuid"]
+
+[dependencies]
+tonic = { version = "0.14", default-features = false, features = ["codegen"] }
+etcd-client = { version = "0.18", features = ["tls"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+tokio-util = { version = "0.7", optional = true }
+tracing = { version = "0.1", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }

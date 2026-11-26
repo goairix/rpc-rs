@@ -1,10 +1,7 @@
 //! Read-only JSON service directory shared by server registration and client resolution.
 use crate::{
-    discovery::{DiscoveryError, DiscoverySubscription, Resolver, Snapshot},
-    registry::{
-        Registration, RegistrationHandle, RegistrationOptions, Registry, RegistryError,
-        ServiceMetadata, ServiceStatus,
-    },
+    DiscoveryError, DiscoverySubscription, Registration, RegistrationHandle, RegistrationOptions,
+    Registry, RegistryError, Resolver, ServiceMetadata, ServiceStatus, Snapshot,
 };
 use serde::Deserialize;
 use std::{

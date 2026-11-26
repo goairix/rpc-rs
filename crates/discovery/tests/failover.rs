@@ -1,6 +1,6 @@
 use etcd_client::DeleteOptions;
 use rpc_discovery::{DiscoveredService, Discovery, DiscoveryOptions, LbPolicy};
-use rpc_registry::EtcdConfig;
+use rpc_naming::etcd::EtcdConfig;
 use std::{
     net::SocketAddr,
     sync::{

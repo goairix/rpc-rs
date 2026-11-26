@@ -1,6 +1,6 @@
+use super::EtcdConfig;
 use crate::{
-    EtcdConfig, RegistrationHandle, RegistrationOptions, RegistryError, ServiceMetadata,
-    ServiceStatus,
+    RegistrationHandle, RegistrationOptions, RegistryError, ServiceMetadata, ServiceStatus,
 };
 use etcd_client::{Client, EventType, LeaseKeepAliveStream, LeaseKeeper, PutOptions, WatchOptions};
 use std::{

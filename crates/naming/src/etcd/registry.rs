@@ -1,6 +1,6 @@
+use super::{EtcdConfig, instance::Instance};
 use crate::{
-    EtcdConfig, Registration, RegistrationHandle, RegistrationOptions, Registry, RegistryError,
-    ServiceMetadata, instance::Instance,
+    Registration, RegistrationHandle, RegistrationOptions, Registry, RegistryError, ServiceMetadata,
 };
 use etcd_client::Client;
 use std::{

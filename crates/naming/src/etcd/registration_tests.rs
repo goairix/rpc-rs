@@ -1,6 +1,6 @@
-//! These tests own every endpoint they compact. Run with ETCD_BIN=... cargo test -p rpc-registry -- --ignored.
+//! These tests own every endpoint they compact. Run with ETCD_BIN=... cargo test -p rpc-naming -- --ignored.
 use super::*;
-use crate::{EtcdRegistry, Registration};
+use crate::{Registration, etcd::EtcdRegistry};
 use std::{
     net::TcpListener,
     path::PathBuf,
@@ -28,7 +28,7 @@ impl Cluster {
         let endpoint = format!("http://{}", client.local_addr().unwrap());
         let peer_url = format!("http://{}", peer.local_addr().unwrap());
         drop((client, peer));
-        let data = std::env::temp_dir().join(format!("rpc-registry-{}", Uuid::new_v4()));
+        let data = std::env::temp_dir().join(format!("rpc-naming-{}", Uuid::new_v4()));
         let child = Command::new(std::env::var_os("ETCD_BIN").unwrap_or_else(|| "etcd".into()))
             .args(["--name", "registry", "--data-dir"])
             .arg(&data)

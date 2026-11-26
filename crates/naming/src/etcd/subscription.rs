@@ -1,6 +1,7 @@
+use super::EtcdConfig;
 use crate::{DiscoveryError, DiscoverySubscription, Resolver, Snapshot};
+use crate::{ServiceMetadata, ServiceStatus};
 use etcd_client::{Client, EventType, GetOptions, KeyValue, WatchOptions};
-use rpc_registry::{EtcdConfig, ServiceMetadata, ServiceStatus};
 use std::{collections::BTreeMap, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot, watch},

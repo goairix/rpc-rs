@@ -5,7 +5,7 @@ use crate::{
     transport::{self, Routes, SharedRoutes},
 };
 use arc_swap::ArcSwap;
-use rpc_registry::ServiceStatus;
+use rpc_naming::ServiceStatus;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::{
     sync::{mpsc, watch},
@@ -173,7 +173,7 @@ async fn run(
                     Err(error) => { reason = error.to_string(); break; }
                 };
                 // Providers may publish all instances, including those being drained.
-                let eligible = |m: &rpc_registry::ServiceMetadata| m.status == ServiceStatus::Up && !m.address.is_empty();
+                let eligible = |m: &rpc_naming::ServiceMetadata| m.status == ServiceStatus::Up && !m.address.is_empty();
                 nodes.retain(|id, node| {
                     let retain = members.get(id).is_some_and(|m| eligible(m) && m.address == node.address);
                     if !retain { node.worker.abort(); }

@@ -1,5 +1,5 @@
 //! Backend interface for resolving a service name into a changing set of instances.
-use rpc_registry::ServiceMetadata;
+use crate::ServiceMetadata;
 use std::{collections::BTreeMap, time::Duration};
 use tokio::sync::watch;
 

@@ -1,6 +1,6 @@
 use etcd_client::{DeleteOptions, Txn, TxnOp};
 use rpc_discovery::Subscription;
-use rpc_registry::EtcdConfig;
+use rpc_naming::etcd::EtcdConfig;
 use std::time::Duration;
 
 /// Exercises linearized startup, same-revision updates, filtering, refresh and deletion.

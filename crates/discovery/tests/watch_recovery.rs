@@ -2,7 +2,7 @@
 //! This exercises the normal subscription entry point without changing cluster settings.
 use http::{Request, Response};
 use rpc_discovery::{Discovery, DiscoveryOptions, Subscription};
-use rpc_registry::EtcdConfig;
+use rpc_naming::etcd::EtcdConfig;
 use std::{
     convert::Infallible,
     future::Future,

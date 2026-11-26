@@ -10,11 +10,10 @@ description = "Go-compatible service discovery and governance for tonic"
 
 [features]
 default = ["etcd"]
-etcd = ["rpc-registry/etcd", "rpc-discovery/etcd"]
+etcd = ["rpc-naming/etcd", "rpc-registry/etcd", "rpc-discovery/etcd"]
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+rpc-naming = { path = "crates/naming", default-features = false }
 tonic = { version = "0.14", features = ["transport", "tls-ring"] }
 tonic-health = "0.14"
 tonic-reflection = "0.14"
