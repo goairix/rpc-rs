@@ -436,3 +436,18 @@ async fn cancelling_an_unclaimed_registration_revokes_it_before_retry() {
     );
     registry.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn registry_connect_requires_an_etcd_response() {
+    // TCP accepts connections into its backlog but no etcd server answers them.
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let config = EtcdConfig {
+        endpoints: vec![format!("http://{}", silent.local_addr().unwrap())],
+        timeout: Duration::from_millis(100),
+        ..Default::default()
+    };
+    let result = timeout(Duration::from_secs(1), EtcdRegistry::connect(config))
+        .await
+        .expect("registry startup exceeded its connection budget");
+    assert!(result.is_err(), "TCP reachability alone is insufficient");
+}

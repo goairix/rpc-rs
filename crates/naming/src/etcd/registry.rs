@@ -97,7 +97,14 @@ impl WeakEtcdRegistry {
 impl EtcdRegistry {
     /// Connect to etcd and initialize independent per-service registration workers on demand.
     pub async fn connect(config: EtcdConfig) -> Result<Self, RegistryError> {
-        let client = config.connect_client().await?;
+        // The etcd client creates a lazy channel. Authentication and the first
+        // successful Status RPC must both fit within the startup deadline.
+        let client = tokio::time::timeout(config.timeout, async {
+            let mut client = config.connect_client().await?;
+            client.status().await?;
+            Ok::<_, RegistryError>(client)
+        })
+        .await??;
         let callbacks = Arc::new(Mutex::new(Vec::<StatusChangeCallback>::new()));
         let stop = CancellationToken::new();
         let (updates, mut receiver) = mpsc::channel::<ServiceMetadata>(16);
