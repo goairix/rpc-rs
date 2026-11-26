@@ -367,3 +367,72 @@ async fn callback_allows_last_owner_drop_to_release_registration() {
     .await
     .expect("last owner drop should stop renewing the registration");
 }
+
+/// Cancel after the worker delivered Created but before the caller can take its handle.
+#[tokio::test]
+#[ignore = "starts a dedicated etcd"]
+async fn cancelling_an_unclaimed_registration_revokes_it_before_retry() {
+    use std::{
+        future::Future,
+        task::{Context as TaskContext, Wake, Waker},
+    };
+
+    struct ReplyReady(tokio::sync::Notify);
+    impl Wake for ReplyReady {
+        fn wake(self: Arc<Self>) {
+            self.0.notify_one();
+        }
+    }
+
+    let cluster = Cluster::start().await;
+    let registry = EtcdRegistry::connect(cluster.config.clone()).await.unwrap();
+    let options = RegistrationOptions {
+        service_name: "echo".into(),
+        address: "127.0.0.1:1234".into(),
+        ..Default::default()
+    };
+    let ready = Arc::new(ReplyReady(tokio::sync::Notify::new()));
+    let mut pending = Box::pin(registry.register(options.clone()));
+    let waker = Waker::from(ready.clone());
+    assert!(
+        pending
+            .as_mut()
+            .poll(&mut TaskContext::from_waker(&waker))
+            .is_pending()
+    );
+    timeout(Duration::from_secs(5), ready.0.notified())
+        .await
+        .unwrap();
+    let mut client = registry.client().unwrap();
+    let prefix = format!("/{}/echo/", registry.namespace());
+    let before = client
+        .get(
+            prefix.clone(),
+            Some(etcd_client::GetOptions::new().with_prefix()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(before.kvs().len(), 1);
+    let abandoned = before.kvs()[0].lease();
+
+    drop(pending);
+    assert!(matches!(
+        registry.register(options).await.unwrap(),
+        Registration::Created(_)
+    ));
+    let after = client
+        .get(prefix, Some(etcd_client::GetOptions::new().with_prefix()))
+        .await
+        .unwrap();
+    assert_eq!(after.kvs().len(), 1);
+    assert_ne!(after.kvs()[0].lease(), abandoned);
+    assert_eq!(
+        client
+            .lease_time_to_live(abandoned, None)
+            .await
+            .unwrap()
+            .ttl(),
+        -1
+    );
+    registry.close().await.unwrap();
+}

@@ -37,10 +37,12 @@ impl Registry for EtcdRegistry {
 }
 
 enum Command {
-    Register(
-        RegistrationOptions,
-        oneshot::Sender<Result<Registration, RegistryError>>,
-    ),
+    Register {
+        options: RegistrationOptions,
+        reply: oneshot::Sender<Result<Registration, RegistryError>>,
+        /// Completed in the same poll that returns the ownership handle to the caller.
+        claimed: oneshot::Receiver<()>,
+    },
     Remove(Option<String>, oneshot::Sender<Result<(), RegistryError>>),
 }
 
@@ -236,11 +238,21 @@ impl EtcdRegistry {
             .worker(&options.service_name, true)?
             .expect("requested worker creation");
         let (reply, result) = oneshot::channel();
+        let (claim, claimed) = oneshot::channel();
         worker
-            .send(Command::Register(options, reply))
+            .send(Command::Register {
+                options,
+                reply,
+                claimed,
+            })
             .await
             .map_err(|_| RegistryError::Closed)?;
-        result.await.map_err(|_| RegistryError::Closed)?
+        let registration = result.await.map_err(|_| RegistryError::Closed)??;
+        if matches!(registration, Registration::Created(_)) {
+            // No suspension point between acknowledgement and returning ownership.
+            claim.send(()).map_err(|_| RegistryError::Closed)?;
+        }
+        Ok(registration)
     }
 
     /// Stop recovery, join the tasks, then revoke the current lease for this service.
@@ -338,7 +350,11 @@ async fn serve_commands(
             break;
         };
         match command {
-            Command::Register(options, reply) => {
+            Command::Register {
+                options,
+                reply,
+                claimed,
+            } => {
                 if current.is_some() {
                     let _ = reply.send(Ok(Registration::Existing));
                     continue;
@@ -353,13 +369,17 @@ async fn serve_commands(
                 .await
                 {
                     Ok(instance) => {
-                        if reply
+                        let delivered = reply
                             .send(Ok(Registration::Created(instance.handle.clone())))
-                            .is_err()
+                            .is_ok();
+                        // A successful send can still be discarded by cancellation. Serialize
+                        // the next command behind this handoff or its lease rollback.
+                        if delivered
+                            && matches!(stop.run_until_cancelled(claimed).await, Some(Ok(())))
                         {
-                            instance.stop().await?;
-                        } else {
                             current = Some((instance, hold));
+                        } else {
+                            instance.stop().await?;
                         }
                     }
                     Err(e) => {
