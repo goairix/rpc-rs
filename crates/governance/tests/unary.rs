@@ -222,3 +222,22 @@ async fn request_timeout_bounds_all_attempts() {
         assert_eq!(result.unwrap_err().code(), Code::DeadlineExceeded);
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn elapsed_budget_wins_when_response_is_ready_on_same_poll() {
+    for outcome in [Ok(()), Err(Status::cancelled("transport cancelled"))] {
+        let policy = UnaryPolicy::default();
+        let end = Instant::now() + Duration::from_millis(50);
+        let (reply, received) = tokio::sync::oneshot::channel();
+        let mut received = Some(received);
+        let call = policy.call(Request::new(()), Some(end), |_| {
+            let received = received.take().unwrap();
+            async move { received.await.unwrap() }
+        });
+        tokio::pin!(call);
+        assert!(futures_util::poll!(&mut call).is_pending());
+        advance(Duration::from_millis(50)).await;
+        reply.send(outcome).unwrap();
+        assert_eq!(call.await.unwrap_err().code(), Code::DeadlineExceeded);
+    }
+}

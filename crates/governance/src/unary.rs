@@ -113,9 +113,12 @@ impl UnaryPolicy {
             }
         };
         let result = match deadline {
-            Some(end) => timeout_at(end, operation)
-                .await
-                .unwrap_or_else(|_| Err(expired())),
+            Some(end) => match timeout_at(end, operation).await {
+                // Tokio polls the wrapped future before its timer. A delayed wake can
+                // therefore deliver a transport status or even success after the deadline.
+                Ok(result) if Instant::now() < end => result,
+                _ => Err(expired()),
+            },
             None => operation.await,
         };
         if let Some(permit) = permit {
