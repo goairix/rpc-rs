@@ -6,3 +6,4 @@ pub use tonic;
 
 mod health;
 pub mod server;
+pub mod static_registry;

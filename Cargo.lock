@@ -912,6 +912,8 @@ dependencies = [
  "rpc-discovery",
  "rpc-governance",
  "rpc-registry",
+ "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "tokio-stream",

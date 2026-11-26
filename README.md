@@ -14,6 +14,49 @@ rpc-rs = { path = "../rpc-rs", default-features = false }
 
 自定义 `Resolver` 为每个服务返回一个 `DiscoverySubscription`，发布按稳定实例 ID 索引的完整快照，并处理刷新和关闭。框架负责筛选可用实例、维护连接和负载均衡。注册端通过 `Registration::Created` 返回所有权句柄，停机时框架用该句柄注销实例。[内存后端接入测试](tests/custom_backend.rs) 演示了这两个接口。
 
+### 从静态 JSON 文件读取
+
+将服务目录保存为 `services.json`。每个实例填写服务名、对客户端可达的 IPv4 或 IPv6 地址，以及非零端口。同名的多条记录组成实例列表。`weight` 是可选的正整数，默认值为 100，在加权轮询时生效。
+
+```json
+{
+  "instances": [
+    { "service_name": "interop.Echo", "ip": "10.0.0.11", "port": 50051, "weight": 200 },
+    { "service_name": "interop.Echo", "ip": "10.0.0.12", "port": 50051 },
+    { "service_name": "billing.Invoice", "ip": "10.0.0.13", "port": 50052 }
+  ]
+}
+```
+
+服务端和客户端各自在启动时加载一份。以下示例中第一台服务器监听所有网卡，并通告文件中对应的地址：
+
+```rust
+use rpc_rs::{registry::RegistrationOptions, server::RpcServer, static_registry::StaticRegistry};
+use std::sync::Arc;
+
+let directory = Arc::new(StaticRegistry::from_file("services.json")?);
+let listener = tokio::net::TcpListener::bind("0.0.0.0:50051").await?;
+let options = RegistrationOptions { address: "10.0.0.11:50051".into(), ..Default::default() };
+let server = RpcServer::default()
+    .add_service(EchoServer::new(EchoImpl), options)
+    .start(listener, Some(directory));
+server.until(async { tokio::signal::ctrl_c().await.ok(); }).await?;
+```
+
+客户端按服务名选择实例：
+
+```rust
+use rpc_rs::{discovery::{Discovery, DiscoveryOptions, LbPolicy}, static_registry::StaticRegistry};
+
+let directory = StaticRegistry::from_file("services.json")?;
+let options = DiscoveryOptions { policy: LbPolicy::WeightedRoundRobin, ..Default::default() };
+let mut discovery = Discovery::connect(&directory, "interop.Echo", options).await?;
+let client = EchoClient::new(discovery.service());
+// 连接异步建立；调用和关闭方式见下文客户端示例。
+```
+
+注册时会校验服务名和通告地址。配置文件由部署方维护，实例停机后记录仍在，共用的连接管理器会摘除断开的实例并尝试重连。配置变更在重新加载文件并创建新的注册或发现对象后生效。静态后端支持 `default-features = false`。
+
 ## 跑一次双向调用
 
 将 Go 框架放在相邻的 `../rpc`。从本仓库根目录运行：
