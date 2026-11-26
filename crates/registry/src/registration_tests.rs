@@ -186,7 +186,7 @@ async fn idempotent_registration_reentrant_removal_and_stale_owner() {
         other => panic!("unexpected concurrent result {other:?}"),
     };
     let prefix = format!("/{}/example.Echo/", registry.namespace());
-    let mut client = registry.client();
+    let mut client = registry.client().unwrap();
     let list = client
         .get(
             prefix.clone(),
@@ -253,6 +253,7 @@ async fn idempotent_registration_reentrant_removal_and_stale_owner() {
     a.unwrap();
     b.unwrap();
     assert!(observer_registry.upgrade().is_none());
+    assert!(matches!(registry.client(), Err(RegistryError::Closed)));
     assert!(registry.register(opts).await.is_err());
     sleep(Duration::from_millis(850)).await;
     assert!(
@@ -270,7 +271,7 @@ async fn idempotent_registration_reentrant_removal_and_stale_owner() {
 async fn put_failure_revokes_granted_lease() {
     let cluster = Cluster::start().await;
     let registry = EtcdRegistry::connect(cluster.config.clone()).await.unwrap();
-    let mut client = registry.client();
+    let mut client = registry.client().unwrap();
     let opts = RegistrationOptions {
         service_name: "Echo".into(),
         address: "localhost:1234".into(),
@@ -320,7 +321,7 @@ async fn keepalive_setup_failure_revokes_key_and_lease() {
 async fn callback_allows_last_owner_drop_to_release_registration() {
     let cluster = Cluster::start().await;
     let registry = EtcdRegistry::connect(cluster.config.clone()).await.unwrap();
-    let mut client = registry.client();
+    let mut client = registry.client().unwrap();
     let observer_registry = registry.downgrade();
     registry.on_status_change(move |record| {
         let nested = observer_registry.clone();

@@ -47,7 +47,7 @@ registry.close().await?;
 result?;
 ```
 
-默认使用 protobuf 全限定服务名和监听器的实际地址注册。监听 `0.0.0.0` 或位于容器内时，通过 `RegistrationOptions::address` 填入客户端可达的主机名与端口。可多次调用 `add_service`。服务端在停机时注销自己创建的实例并排空在途请求；显式调用 `shutdown().await` 或等待 `until` 可获得清理结果。共享 registry 由其所有者最后关闭。
+默认使用 protobuf 全限定服务名和监听器的实际地址注册。监听 `0.0.0.0` 或位于容器内时，通过 `RegistrationOptions::address` 填入客户端可达的主机名与端口。可多次调用 `add_service`。服务端在停机时注销自己创建的实例并排空在途请求；显式调用 `shutdown().await` 或等待 `until` 可获得清理结果。共享 registry 由其所有者最后关闭。注册状态回调需要调用 registry 时，捕获 `registry.downgrade()` 返回的弱引用，在回调执行期间调用 `upgrade()`。显式借出的 etcd 客户端 clone 由调用方释放。
 
 标准健康检查随服务器启动。反射可用 `with_reflection()` 开启。反射与 `with_limiter(TokenBucket::new(rate, burst))` 均使用随服务桩生成的 descriptor。通过 `with_transport` 传入配置了 TLS 或 HTTP/2 keepalive 的 tonic Server。应用可用 `with_governance` 接入 OpenTelemetry meter 和业务错误日志分类；tracing subscriber、runtime 和 exporter 由应用初始化。
 

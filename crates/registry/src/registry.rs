@@ -49,6 +49,8 @@ struct Worker {
 }
 
 struct State {
+    /// Registry-owned connection pool, released when close starts. Workers hold their own clones until joined.
+    client: Option<Client>,
     workers: HashMap<String, Worker>,
     /// Concurrent close calls observe the same cleanup result.
     close: Option<Completion>,
@@ -56,7 +58,6 @@ struct State {
 }
 
 struct Inner {
-    client: Client,
     config: Arc<EtcdConfig>,
     state: Mutex<State>,
     stop: CancellationToken,
@@ -112,12 +113,12 @@ impl EtcdRegistry {
                 .await;
         });
         Ok(Self(Arc::new(Inner {
-            client,
             config: Arc::new(config),
             stop,
             callbacks,
             updates,
             state: Mutex::new(State {
+                client: Some(client),
                 workers: HashMap::new(),
                 close: None,
                 dispatch: Some(dispatch),
@@ -131,9 +132,16 @@ impl EtcdRegistry {
         WeakEtcdRegistry(Arc::downgrade(&self.0))
     }
 
-    /// Clone the configured client, sharing its underlying etcd connection pool.
-    pub fn client(&self) -> Client {
-        self.0.client.clone()
+    /// Borrow an independently owned clone of the pool while the registry is open.
+    /// The caller must drop that clone when it no longer needs the connection.
+    pub fn client(&self) -> Result<Client, RegistryError> {
+        self.0
+            .state
+            .lock()
+            .unwrap()
+            .client
+            .clone()
+            .ok_or(RegistryError::Closed)
     }
 
     /// Namespace used to construct registration keys.
@@ -180,7 +188,7 @@ impl EtcdRegistry {
         let owner = Arc::downgrade(&self.0);
         let service = name.to_owned();
         let commands = serve_commands(
-            self.client(),
+            state.client.clone().ok_or(RegistryError::Closed)?,
             self.0.config.clone(),
             self.0.updates.clone(),
             self.0.stop.child_token(),
@@ -274,23 +282,28 @@ impl EtcdRegistry {
                 self.0.callbacks.lock().unwrap().clear();
                 let (done, result) = watch::channel(None);
                 state.close = Some(result.clone());
+                state.client.take();
                 let workers = std::mem::take(&mut state.workers);
                 let dispatch = state.dispatch.take();
                 tokio::spawn(async move {
-                    let mut error = None;
+                    let mut errors = Vec::new();
                     for worker in workers.into_values() {
                         match worker.task.await {
                             Ok(Ok(())) => (),
-                            Ok(Err(e)) => error = Some(e.to_string()),
-                            Err(e) => error = Some(e.to_string()),
+                            Ok(Err(e)) => errors.push(e.to_string()),
+                            Err(e) => errors.push(e.to_string()),
                         }
                     }
                     if let Some(task) = dispatch
                         && let Err(e) = task.await
                     {
-                        error = Some(e.to_string());
+                        errors.push(e.to_string());
                     }
-                    done.send_replace(Some(error.map_or(Ok(()), Err)));
+                    done.send_replace(Some(if errors.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(errors.join("; "))
+                    }));
                 });
                 result
             }

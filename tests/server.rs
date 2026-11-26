@@ -213,7 +213,7 @@ impl Registry for FailThird {
                 handle.service_name,
                 handle.instance_id
             );
-            let response = self.registry.client().get(key.clone(), None).await?;
+            let response = self.registry.client()?.get(key.clone(), None).await?;
             let kv = response.kvs().first().expect("B must have been published");
             *self.created_b.lock().unwrap() = Some((key, kv.lease()));
         }
