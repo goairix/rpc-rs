@@ -23,3 +23,7 @@ pub enum RegistryError {
     #[error("registry worker exited: {0}")]
     Worker(String),
 }
+
+mod instance;
+mod registry;
+pub use registry::{EtcdRegistry, Registration, RegistrationHandle};
