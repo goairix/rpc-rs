@@ -2,8 +2,10 @@
 mod balancer;
 mod resolver;
 pub use resolver::{DiscoveryError, DiscoverySubscription, Resolver, Snapshot};
+#[cfg(feature = "etcd")]
 mod subscription;
 pub use balancer::LbPolicy;
+#[cfg(feature = "etcd")]
 pub use subscription::Subscription;
 mod discovery;
 mod transport;

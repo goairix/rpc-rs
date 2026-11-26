@@ -8,6 +8,10 @@ version = "0.1.0"
 edition = "2024"
 description = "Go-compatible service discovery and governance for tonic"
 
+[features]
+default = ["etcd"]
+etcd = ["rpc-registry/etcd", "rpc-discovery/etcd"]
+
 [dependencies]
 tonic = { version = "0.14", features = ["transport", "tls-ring"] }
 tonic-health = "0.14"
@@ -18,8 +22,8 @@ tokio = { version = "1", features = ["macros", "rt", "net", "signal", "sync"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = "0.7"
 thiserror = "2"
-rpc-registry = { path = "crates/registry" }
+rpc-registry = { path = "crates/registry", default-features = false }
 rpc-governance = { path = "crates/governance" }
-rpc-discovery = { path = "crates/discovery" }
+rpc-discovery = { path = "crates/discovery", default-features = false }
 tower = "0.5"
 http = "1"

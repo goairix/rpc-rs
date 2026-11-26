@@ -1,24 +1,20 @@
 use rpc_rs::{
-    discovery::Discovery,
     governance::TokenBucket,
-    registry::{
-        EtcdConfig, EtcdRegistry, Registration, RegistrationHandle, RegistrationOptions,
-        RegistryError,
-    },
+    registry::{Registration, RegistrationHandle, RegistrationOptions, RegistryError},
     server::{Registry, RpcServer},
 };
 use std::{
     convert::Infallible,
     future::{Ready, ready},
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use tokio::{
     net::TcpListener,
     sync::{Notify, mpsc},
-    time::{sleep, timeout},
+    time::timeout,
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Status, body::Body, server::NamedService, transport::Endpoint};
@@ -194,11 +190,26 @@ async fn graceful_shutdown_drains_active_stream_even_if_withdrawal_fails() {
     TcpListener::bind(addr).await.unwrap();
 }
 
+#[cfg(feature = "etcd")]
+use rpc_rs::{
+    discovery::Discovery,
+    registry::{EtcdConfig, EtcdRegistry},
+};
+#[cfg(feature = "etcd")]
+use std::{
+    sync::Mutex,
+    time::{SystemTime, UNIX_EPOCH},
+};
+#[cfg(feature = "etcd")]
+use tokio::time::sleep;
+
+#[cfg(feature = "etcd")]
 /// Inject the final registration failure after recording the newly published B lease.
 struct FailThird {
     registry: EtcdRegistry,
     created_b: Mutex<Option<(String, i64)>>,
 }
+#[cfg(feature = "etcd")]
 #[tonic::async_trait]
 impl Registry for FailThird {
     async fn register(&self, options: RegistrationOptions) -> Result<Registration, RegistryError> {
@@ -224,6 +235,7 @@ impl Registry for FailThird {
     }
 }
 
+#[cfg(feature = "etcd")]
 #[tokio::test]
 #[ignore = "requires RPC_ETCD_ENDPOINT"]
 async fn failed_start_revokes_only_created_registration_and_lease() {

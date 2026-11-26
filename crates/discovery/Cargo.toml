@@ -3,23 +3,39 @@ name = "rpc-discovery"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["etcd"]
+etcd = ["rpc-registry/etcd", "dep:etcd-client", "dep:serde_json", "dep:tracing"]
+
 [dependencies]
 arc-swap = "1"
-etcd-client = "0.18"
+etcd-client = { version = "0.18", optional = true }
 fastrand = "2"
 http = "1"
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
-rpc-registry = { path = "../registry" }
-serde_json = "1"
+rpc-registry = { path = "../registry", default-features = false }
+serde_json = { version = "1", optional = true }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time", "io-util"] }
 tokio-util = "0.7"
 tonic = { version = "0.14", features = ["transport", "tls-ring"] }
 tower = { version = "0.5", features = ["util", "buffer"] }
-tracing = "0.1"
+tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tonic-health = "0.14"
 tokio-stream = { version = "0.1", features = ["net"] }
 tempfile = "3"
+
+[[test]]
+name = "discovery"
+required-features = ["etcd"]
+
+[[test]]
+name = "watch_recovery"
+required-features = ["etcd"]
+
+[[test]]
+name = "failover"
+required-features = ["etcd"]

@@ -1,6 +1,6 @@
 # rpc-rs 开发约定
 
-本文件适用于整个仓库。目标是让 Rust 与 Go 服务通过同一份业务 proto 和同一个 etcd namespace 互相发现、调用。Rust 底座采用 grpc-rust 项目已发布的 tonic。
+本文件适用于整个仓库。目标是让 Rust 与 Go 服务使用同一份业务 proto 互调，并可通过双方兼容的后端互相发现。Rust 底座采用 grpc-rust 项目已发布的 tonic。
 
 ## 工作依据
 
@@ -22,7 +22,8 @@
 ## 跨语言契约
 
 - Rust 对外只用标准 gRPC 状态码 0–16。Go 端的非标准码在 Rust 端表现为 `UNKNOWN`。变更错误处理时，分别验证调用方向和 unary／streaming，预期以规格中的错误码表为准。
-- 默认 namespace 为 `grpc`，注册 key 为 `/<namespace>/<service_name>/<instance_id>`。保持 Go JSON 字段名、Unix 秒时间戳及对 `tags`、`properties` 为 null 的兼容。更新治理字段时保留原 key 和 lease。
+- 注册与发现使用独立的后端接口。新增后端时复用公共路由与服务生命周期逻辑。下述 key、lease 和 revision 约定适用于 etcd 实现。
+- etcd 默认 namespace 为 `grpc`，注册 key 为 `/<namespace>/<service_name>/<instance_id>`。保持 Go JSON 字段名、Unix 秒时间戳及对 `tags`、`properties` 为 null 的兼容。更新治理字段时保留原 key 和 lease。
 - 同一 registry 的同名注册应幂等。租约恢复复用实例 ID、key、注册时间与最新治理状态；启动回滚和停机只撤销当前所有者创建的实例。
 - 注册端从首次 Put 的 revision + 1 监听自身 key，发现端从线性快照的 revision + 1 监听服务前缀。遇到 compaction 后先重新读取当前值，再续订。
 - 仅向状态为 `up` 且连接可用的实例分流。默认策略为 `round_robin`，另外支持 `pick_first` 和 `weighted_round_robin`。只改权重时复用连接。Tower 的 `poll_ready` 表示背压，无节点时由 `call` 路径让生成客户端收到 `UNAVAILABLE`。

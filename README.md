@@ -1,6 +1,18 @@
 # rpc-rs
 
-基于 tonic 的 Rust RPC 库。Go 和 Rust 服务使用同一份 protobuf 定义，通过 etcd 注册、发现并调用对方。库入口是 `rpc_rs`，生成的 tonic 服务和客户端可以直接接入。
+基于 tonic 的 Rust RPC 库。Go 和 Rust 服务使用同一份 protobuf 定义，可以直连，也可以通过共同的注册发现后端按服务名互调。库入口是 `rpc_rs`，生成的 tonic 服务和客户端可以直接接入。
+
+## 选择注册与发现后端
+
+服务端向 `RpcServer::start` 传入 `Arc<dyn registry::Registry>`，直连时传 `None`。客户端向 `discovery::Discovery::connect` 传入 `&dyn discovery::Resolver` 和服务名。两端独立选择实现，跨语言按名称发现时需要共享兼容的服务目录。
+
+默认启用 Cargo 特性 `etcd`，内置的注册实现是 `EtcdRegistry`，发现客户端可直接传 `&EtcdConfig`。使用其他后端时可以关闭该特性：
+
+```toml
+rpc-rs = { path = "../rpc-rs", default-features = false }
+```
+
+自定义 `Resolver` 为每个服务返回一个 `DiscoverySubscription`，发布按稳定实例 ID 索引的完整快照，并处理刷新和关闭。框架负责筛选可用实例、维护连接和负载均衡。注册端通过 `Registration::Created` 返回所有权句柄，停机时框架用该句柄注销实例。[内存后端接入测试](tests/custom_backend.rs) 演示了这两个接口。
 
 ## 跑一次双向调用
 

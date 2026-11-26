@@ -1,6 +1,8 @@
 //! Service registration and metadata shared with the Go RPC framework.
+#[cfg(feature = "etcd")]
 pub mod config;
 pub mod metadata;
+#[cfg(feature = "etcd")]
 pub use config::EtcdConfig;
 pub use metadata::{RegistrationOptions, ServiceMetadata, ServiceStatus};
 
@@ -43,6 +45,7 @@ pub enum RegistryError {
     /// An application-supplied registry failed. The original error is available as its source.
     #[error(transparent)]
     Backend(Box<dyn std::error::Error + Send + Sync>),
+    #[cfg(feature = "etcd")]
     /// etcd returned an error.
     #[error(transparent)]
     Etcd(#[from] etcd_client::Error),
@@ -54,6 +57,9 @@ pub enum RegistryError {
     Worker(String),
 }
 
+#[cfg(feature = "etcd")]
 mod instance;
+#[cfg(feature = "etcd")]
 mod registry;
+#[cfg(feature = "etcd")]
 pub use registry::{EtcdRegistry, WeakEtcdRegistry};

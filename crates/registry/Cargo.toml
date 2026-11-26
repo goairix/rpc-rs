@@ -2,15 +2,22 @@
 name = "rpc-registry"
 version = "0.1.0"
 edition = "2024"
-description = "Go-compatible leased service registration in etcd"
+description = "Service registration contracts and a Go-compatible etcd backend"
+
+[features]
+default = ["etcd"]
+etcd = ["dep:etcd-client", "dep:serde_json", "dep:tokio-util", "dep:tracing", "dep:uuid"]
 
 [dependencies]
-tonic = { version = "0.14", default-features = false }
-etcd-client = { version = "0.18", features = ["tls"] }
+tonic = { version = "0.14", default-features = false, features = ["codegen"] }
+etcd-client = { version = "0.18", features = ["tls"], optional = true }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", optional = true }
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
-tokio-util = "0.7"
-tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
+tokio-util = { version = "0.7", optional = true }
+tracing = { version = "0.1", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
+[dev-dependencies]
+serde_json = "1"
