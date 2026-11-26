@@ -35,6 +35,13 @@ struct Context {
     updates: mpsc::Sender<ServiceMetadata>,
 }
 
+/// How to resume after an etcd watch response or a closed response stream.
+enum WatchEnd {
+    Disconnected,
+    Resynced,
+    Cancelled(String),
+}
+
 struct Lease {
     id: i64,
     /// Revision of the Put that attached this lease to the key.
@@ -244,8 +251,30 @@ impl Context {
     async fn watch(&mut self, mut next_revision: i64) {
         let mut delay = BACKOFF;
         loop {
-            if let Err(error) = self.watch_once(&mut next_revision, &mut delay).await {
-                tracing::warn!(%error, key = %self.key, "registration watch disconnected");
+            match self.watch_once(&mut next_revision, &mut delay).await {
+                Ok(WatchEnd::Resynced) => {
+                    delay = BACKOFF;
+                    continue;
+                }
+                Ok(WatchEnd::Cancelled(reason)) => {
+                    tracing::error!(%reason, key = %self.key, "etcd cancelled registration watch");
+                    return;
+                }
+                Err(RegistryError::Etcd(etcd_client::Error::GRpcStatus(status)))
+                    if matches!(
+                        status.code(),
+                        tonic::Code::PermissionDenied
+                            | tonic::Code::Unauthenticated
+                            | tonic::Code::InvalidArgument
+                    ) =>
+                {
+                    tracing::error!(%status, key = %self.key, "etcd rejected registration watch");
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, key = %self.key, "registration watch disconnected")
+                }
+                Ok(WatchEnd::Disconnected) => {}
             }
             sleep(delay).await;
             delay = (delay * 2).min(MAX_BACKOFF);
@@ -258,7 +287,7 @@ impl Context {
         &mut self,
         next: &mut i64,
         delay: &mut Duration,
-    ) -> Result<(), RegistryError> {
+    ) -> Result<WatchEnd, RegistryError> {
         let mut stream = self
             .client
             .watch(
@@ -277,10 +306,10 @@ impl Context {
                     .ok_or(RegistryError::Invalid("missing Get revision"))?
                     .revision()
                     + 1;
-                return Ok(());
+                return Ok(WatchEnd::Resynced);
             }
             if response.canceled() {
-                return Ok(());
+                return Ok(WatchEnd::Cancelled(response.cancel_reason().to_owned()));
             }
             for event in response.events() {
                 if let Some(kv) = event.kv() {
@@ -294,7 +323,7 @@ impl Context {
                 *delay = BACKOFF;
             }
         }
-        Ok(())
+        Ok(WatchEnd::Disconnected)
     }
 }
 

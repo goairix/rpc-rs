@@ -841,6 +841,7 @@ dependencies = [
  "etcd-client",
  "fastrand",
  "http",
+ "http-body-util",
  "hyper-util",
  "rpc-registry",
  "serde_json",
@@ -896,6 +897,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "tonic",
  "tracing",
  "uuid",
 ]
