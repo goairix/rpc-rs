@@ -49,7 +49,7 @@ impl Subscription {
             next_revision: 0,
             members: Members::new(),
         };
-        state.reload().await?;
+        state.reload().await.map_err(|e| state.snapshot_error(&e))?;
         let (output, updates) = watch::channel(Ok(state.members.clone()));
         let (refresh, requests) = mpsc::channel(1);
         let stop = CancellationToken::new();
@@ -139,18 +139,21 @@ impl State {
         }
     }
 
-    async fn reload(&mut self) -> Result<(), DiscoveryError> {
+    fn snapshot_error(&self, error: &etcd_client::Error) -> DiscoveryError {
+        DiscoveryError(format!("{}: snapshot: {error}", self.prefix))
+    }
+
+    async fn reload(&mut self) -> Result<(), etcd_client::Error> {
         let response = self
             .client
             .get(
                 self.prefix.as_bytes(),
                 Some(GetOptions::new().with_prefix()),
             )
-            .await
-            .map_err(|e| DiscoveryError(format!("{}: snapshot: {e}", self.prefix)))?;
+            .await?;
         self.next_revision = response
             .header()
-            .ok_or_else(|| DiscoveryError(format!("{}: missing snapshot revision", self.prefix)))?
+            .ok_or_else(|| etcd_client::Error::InvalidArgs("missing snapshot revision".into()))?
             .revision()
             + 1;
         self.members.clear();
@@ -236,8 +239,8 @@ impl State {
                             return;
                         }
                         Ok(End::Compacted) => {},
-                        Err(etcd_client::Error::GRpcStatus(s)) if matches!(s.code(), tonic::Code::PermissionDenied | tonic::Code::Unauthenticated | tonic::Code::InvalidArgument) => {
-                            let _ = output.send_replace(Err(DiscoveryError(format!("{}: watch: {s}", self.prefix))));
+                        Err(error) if permanent(&error) => {
+                            let _ = output.send_replace(Err(DiscoveryError(format!("{}: watch: {error}", self.prefix))));
                             return;
                         }
                         other => {
@@ -249,13 +252,27 @@ impl State {
                     }
                 }
             }
-            let result = self.reload().await;
+            let result = match self.reload().await {
+                Ok(()) => {
+                    let _ = output.send_replace(Ok(self.members.clone()));
+                    Ok(())
+                }
+                Err(cause) => {
+                    let error = self.snapshot_error(&cause);
+                    tracing::warn!(%error, "snapshot refresh failed");
+                    if permanent(&cause) {
+                        // The authority can no longer confirm this membership. Withdraw the
+                        // last snapshot for all clients, including callers that never refresh.
+                        let _ = output.send_replace(Err(error.clone()));
+                        if let Some(reply) = reply {
+                            let _ = reply.send(Err(error));
+                        }
+                        return;
+                    }
+                    Err(error)
+                }
+            };
             reload = result.is_err();
-            if let Err(error) = &result {
-                tracing::warn!(%error, "snapshot refresh failed");
-            } else {
-                let _ = output.send_replace(Ok(self.members.clone()));
-            }
             if let Some(reply) = reply {
                 let _ = reply.send(result);
             }
@@ -265,6 +282,19 @@ impl State {
                 Duration::ZERO
             };
         }
+    }
+}
+
+fn permanent(error: &etcd_client::Error) -> bool {
+    match error {
+        etcd_client::Error::InvalidArgs(_) => true,
+        etcd_client::Error::GRpcStatus(status) => matches!(
+            status.code(),
+            tonic::Code::PermissionDenied
+                | tonic::Code::Unauthenticated
+                | tonic::Code::InvalidArgument
+        ),
+        _ => false,
     }
 }
 
