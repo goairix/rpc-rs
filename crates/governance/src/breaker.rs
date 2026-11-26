@@ -3,9 +3,31 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tonic::{Code, Status};
 
+/// Thresholds and open duration shared by every clone of a circuit.
+#[derive(Clone, Copy, Debug)]
+pub struct BreakerConfig {
+    /// Counted failures before opening. Zero opens on the first counted failure.
+    pub failure_threshold: u32,
+    /// Successful half-open probes before closing. Zero closes on the first success.
+    pub success_threshold: u32,
+    /// Minimum time spent open before the next call may become a probe.
+    pub open_interval: Duration,
+}
+
+impl Default for BreakerConfig {
+    fn default() -> Self {
+        Self {
+            failure_threshold: 5,
+            success_threshold: 3,
+            open_interval: Duration::from_secs(10),
+        }
+    }
+}
+
 /// Shared circuit state for one logical upstream. Clones share failure history.
 #[derive(Clone)]
 pub struct CircuitBreaker {
+    config: BreakerConfig,
     state: Arc<Mutex<State>>,
     /// Application-defined classification, run outside the state lock.
     failed: Arc<dyn Fn(Code) -> bool + Send + Sync>,
@@ -22,7 +44,8 @@ enum Phase {
         consecutive_failures: u32,
     },
     Open {
-        probe_after: Instant,
+        /// Monotonic instant of the latest transition to open.
+        opened_at: Instant,
     },
     HalfOpen {
         successes: u32,
@@ -39,7 +62,17 @@ impl Default for CircuitBreaker {
 impl CircuitBreaker {
     /// Count errors selected by the classifier. Five consecutive failures open the circuit.
     pub fn new(failed: impl Fn(Code) -> bool + Send + Sync + 'static) -> Self {
+        Self::with_config(BreakerConfig::default(), failed)
+    }
+
+    /// Create a circuit with application thresholds and an error classifier.
+    /// Excluded errors preserve counters and release any half-open probe.
+    pub fn with_config(
+        config: BreakerConfig,
+        failed: impl Fn(Code) -> bool + Send + Sync + 'static,
+    ) -> Self {
         Self {
+            config,
             state: Arc::new(Mutex::new(State {
                 generation: 0,
                 phase: Phase::Closed {
@@ -53,8 +86,8 @@ impl CircuitBreaker {
     /// Admit one whole logical operation, including all retry attempts.
     pub(crate) fn enter(&self) -> Result<Permit<'_>, Status> {
         let mut state = self.state.lock().unwrap();
-        if let Phase::Open { probe_after } = state.phase {
-            if Instant::now() < probe_after {
+        if let Phase::Open { opened_at } = state.phase {
+            if opened_at.elapsed() < self.config.open_interval {
                 return Err(Status::unavailable("circuit is open"));
             }
             state.generation += 1;
@@ -88,7 +121,11 @@ pub(crate) struct Permit<'a> {
 
 impl Permit<'_> {
     pub(crate) fn finish(mut self, error: Option<Code>) {
-        let failed = error.is_some_and(|code| (self.breaker.failed)(code));
+        // Dropping a neutral permit still releases its probe slot.
+        if error.is_some_and(|code| !(self.breaker.failed)(code)) {
+            return;
+        }
+        let failed = error.is_some();
         let mut state = self.breaker.state.lock().unwrap();
         self.finished = true;
         if self.generation != state.generation {
@@ -98,12 +135,16 @@ impl Permit<'_> {
             Phase::Closed {
                 consecutive_failures,
             } => {
-                *consecutive_failures = if failed { *consecutive_failures + 1 } else { 0 };
-                if *consecutive_failures < 5 {
+                if !failed {
+                    *consecutive_failures = 0;
+                    return;
+                }
+                *consecutive_failures += 1;
+                if *consecutive_failures < self.breaker.config.failure_threshold {
                     return;
                 }
                 Phase::Open {
-                    probe_after: Instant::now() + Duration::from_secs(10),
+                    opened_at: Instant::now(),
                 }
             }
             Phase::HalfOpen {
@@ -113,11 +154,11 @@ impl Permit<'_> {
                 *probe_in_flight = false;
                 if failed {
                     Phase::Open {
-                        probe_after: Instant::now() + Duration::from_secs(10),
+                        opened_at: Instant::now(),
                     }
                 } else {
                     *successes += 1;
-                    if *successes < 3 {
+                    if *successes < self.breaker.config.success_threshold {
                         return;
                     }
                     Phase::Closed {

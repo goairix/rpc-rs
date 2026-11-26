@@ -241,3 +241,48 @@ async fn elapsed_budget_wins_when_response_is_ready_on_same_poll() {
         assert_eq!(call.await.unwrap_err().code(), Code::DeadlineExceeded);
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn excluded_errors_preserve_closed_and_half_open_counts() {
+    let breaker = CircuitBreaker::with_config(
+        rpc_governance::BreakerConfig {
+            failure_threshold: 2,
+            success_threshold: 2,
+            open_interval: Duration::from_secs(3),
+        },
+        |code| code != Code::InvalidArgument,
+    );
+    let policy = UnaryPolicy::default().with_breaker(breaker);
+    let call = |code| {
+        policy.call(Request::new(()), None, move |_| {
+            ready(if code == Code::Ok {
+                Ok(())
+            } else {
+                Err(Status::new(code, "upstream"))
+            })
+        })
+    };
+    for code in [Code::Internal, Code::InvalidArgument, Code::Internal] {
+        assert_eq!(call(code).await.unwrap_err().code(), code);
+    }
+    advance(Duration::from_secs(2)).await;
+    assert_eq!(call(Code::Ok).await.unwrap_err().code(), Code::Unavailable);
+    advance(Duration::from_secs(1)).await;
+    call(Code::Ok).await.unwrap();
+    assert_eq!(
+        call(Code::InvalidArgument).await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
+
+    let mut probe =
+        Box::pin(policy.call(Request::new(()), None, |_| pending::<Result<(), Status>>()));
+    assert!(futures_util::poll!(&mut probe).is_pending());
+    assert_eq!(call(Code::Ok).await.unwrap_err().code(), Code::Unavailable);
+    drop(probe);
+    call(Code::Ok).await.unwrap();
+
+    let mut normal =
+        Box::pin(policy.call(Request::new(()), None, |_| pending::<Result<(), Status>>()));
+    assert!(futures_util::poll!(&mut normal).is_pending());
+    call(Code::Ok).await.unwrap();
+}
