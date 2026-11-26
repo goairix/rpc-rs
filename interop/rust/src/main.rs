@@ -13,11 +13,22 @@ use pb::echo_server::{Echo, EchoServer};
 type Output = Pin<Box<dyn Stream<Item = Result<Message, Status>> + Send>>;
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-struct Peer(String);
+struct Peer {
+    id: String,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The stream can only release this guard when the remote client cancels or disconnects.
+struct NotifyDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl Drop for NotifyDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
 
 impl Peer {
     fn reply(&self, mut message: Message) -> Message {
-        message.instance.clone_from(&self.0);
+        message.instance.clone_from(&self.id);
         message
     }
 }
@@ -31,6 +42,17 @@ impl Echo for Peer {
         let md = req.metadata().get("x-interop").cloned();
         let msg = req.into_inner();
         match msg.value.as_str() {
+            "cancel_seen" => {
+                return Ok(Response::new(
+                    self.reply(Message {
+                        value: self
+                            .cancelled
+                            .load(std::sync::atomic::Ordering::Acquire)
+                            .to_string(),
+                        ..Default::default()
+                    }),
+                ));
+            }
             "invalid" => return Err(Status::invalid_argument("invalid input")),
             "wait" => std::future::pending::<()>().await,
             _ => {}
@@ -56,18 +78,21 @@ impl Echo for Peer {
 
     async fn download(&self, req: Request<Message>) -> Result<Response<Output>, Status> {
         let msg = req.into_inner();
-        let id = self.0.clone();
+        let id = self.id.clone();
+        let cancelled = self.cancelled.clone();
         let stream = async_stream::try_stream! {
+            let _guard=(msg.value=="cancel").then(|| NotifyDrop(cancelled));
             for sequence in 1..=msg.sequence {
                 yield Message {sequence, value:msg.value.clone(), instance:id.clone()};
             }
+            if msg.value=="cancel"{std::future::pending::<()>().await;}
             if msg.value=="invalid" {Err(Status::invalid_argument("invalid input"))?;}
         };
         Ok(Response::new(Box::pin(stream)))
     }
 
     async fn chat(&self, req: Request<Streaming<Message>>) -> Result<Response<Output>, Status> {
-        let id = self.0.clone();
+        let id = self.id.clone();
         let stream = req.into_inner().map(move |item| {
             item.map(|m| Message {
                 instance: id.clone(),
@@ -114,6 +139,16 @@ where
         down.message().await.unwrap_err().code(),
         tonic::Code::InvalidArgument
     );
+    let mut live = client.download(msg(1, "cancel")).await?.into_inner();
+    assert!(live.message().await?.is_some());
+    drop(live);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while client.say(msg(0, "cancel_seen")).await?.into_inner().value != "true" {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        Ok::<(), Status>(())
+    })
+    .await??;
     let mut chat = client
         .chat(tokio_stream::iter(items.clone()))
         .await?
@@ -136,6 +171,39 @@ where
         assert_eq!(
             client.say(msg(0, "business")).await.unwrap_err().code(),
             tonic::Code::Unknown
+        );
+    }
+    if go_framework {
+        let policy = rpc_rs::governance::UnaryPolicy::default().with_retry(Default::default());
+        let mut request = Request::new(msg(42, "retry"));
+        request
+            .metadata_mut()
+            .insert("x-interop", "replay".parse()?);
+        let retried = policy
+            .call(
+                request,
+                Some(tokio::time::Instant::now() + Duration::from_secs(4)),
+                |r| {
+                    let mut c = client.clone();
+                    async move { c.say(r).await }
+                },
+            )
+            .await?
+            .into_inner();
+        assert_eq!((retried.sequence, retried.value.as_str()), (42, "retry"));
+        let mut stream = client.download(msg(1, "retry")).await?.into_inner();
+        assert!(stream.message().await?.is_some());
+        assert_eq!(
+            stream.message().await.unwrap_err().code(),
+            tonic::Code::Unavailable
+        );
+        assert_eq!(
+            client
+                .say(msg(0, "stream_attempts"))
+                .await?
+                .into_inner()
+                .sequence,
+            1
         );
     }
     let mut wait = Request::new(msg(0, "wait"));
@@ -180,7 +248,10 @@ async fn serve(addr: &str, id: &str) -> Result<(), Error> {
     }
     let server = builder
         .add_service(
-            EchoServer::new(Peer(id.into())),
+            EchoServer::new(Peer {
+                id: id.into(),
+                cancelled: Default::default(),
+            }),
             RegistrationOptions::default(),
         )
         .start(

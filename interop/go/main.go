@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -37,6 +38,10 @@ type echo struct {
 	pb.UnimplementedEchoServer
 	meta.UnimplementedServiceRegister
 	id string
+	// Observed on the server after the remote client cancels a live Download.
+	cancelled      atomic.Bool
+	firstBudget    atomic.Int64
+	streamAttempts atomic.Int32
 }
 
 func (s *echo) RegisterMetadata() meta.ServiceRegisterMetadata {
@@ -53,6 +58,23 @@ func (s *echo) Say(ctx context.Context, m *pb.Message) (*pb.Message, error) {
 		return nil, status.Error(codes.InvalidArgument, "invalid input")
 	case "business":
 		return nil, rpcerr.New(11001, "business")
+	case "cancel_seen":
+		return s.reply(&pb.Message{Value: strconv.FormatBool(s.cancelled.Load())}), nil
+	case "stream_attempts":
+		return s.reply(&pb.Message{Sequence: s.streamAttempts.Load()}), nil
+	case "retry":
+		deadline, ok := ctx.Deadline()
+		if !ok || m.Sequence != 42 || fmt.Sprint(metadata.ValueFromIncomingContext(ctx, "x-interop")) != "[replay]" {
+			return nil, errors.New("lost retry payload, metadata or deadline")
+		}
+		remaining := int64(time.Until(deadline))
+		if s.firstBudget.CompareAndSwap(0, remaining) {
+			return nil, rpcerr.New(rpcerr.ErrorCode(codes.Unavailable), "retry this unary")
+		}
+		if remaining >= s.firstBudget.Load() {
+			return nil, errors.New("retry extended the original deadline")
+		}
+		return s.reply(m), nil
 	case "wait":
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -84,6 +106,15 @@ func (s *echo) Download(m *pb.Message, stream pb.Echo_DownloadServer) error {
 		if err := stream.Send(s.reply(&pb.Message{Sequence: i, Value: m.Value})); err != nil {
 			return err
 		}
+	}
+	if m.Value == "cancel" {
+		<-stream.Context().Done()
+		s.cancelled.Store(true)
+		return stream.Context().Err()
+	}
+	if m.Value == "retry" {
+		s.streamAttempts.Add(1)
+		return status.Error(codes.Unavailable, "stream ended")
 	}
 	if m.Value == "invalid" {
 		return status.Error(codes.InvalidArgument, "invalid input")
@@ -204,6 +235,26 @@ func check(c pb.EchoClient) error {
 	if _, err = down.Recv(); status.Code(err) != codes.InvalidArgument {
 		return fmt.Errorf("stream ended with %v", err)
 	}
+	cancelCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	live, e := c.Download(cancelCtx, &pb.Message{Sequence: 1, Value: "cancel"})
+	if e != nil {
+		return e
+	}
+	if _, e = live.Recv(); e != nil {
+		return e
+	}
+	cancelStream()
+	for {
+		seen, e := c.Say(ctx, &pb.Message{Value: "cancel_seen"})
+		if e != nil {
+			return e
+		}
+		if seen.Value == "true" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	chat, err := c.Chat(ctx)
 	if err != nil {
 		return err
@@ -290,7 +341,7 @@ func run() error {
 }
 
 func main() {
-	logger.Init(false)
+	logger.Init(true)
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
