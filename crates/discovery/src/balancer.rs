@@ -22,13 +22,18 @@ pub(crate) struct Picker {
     cumulative: Vec<u128>,
 }
 
+/// Go registrations use the default weight of 100 for missing or nonpositive values.
+pub(crate) fn effective_weight(weight: i64) -> i64 {
+    if weight > 0 { weight } else { 100 }
+}
+
 impl Picker {
     pub(crate) fn new(policy: LbPolicy, weights: &[i64]) -> Self {
         let mut cumulative = Vec::with_capacity(weights.len());
         let mut sum = 0_u128;
         let mut divisor = 0;
         for &raw in weights {
-            let weight = if raw > 0 { raw as u128 } else { 100 };
+            let weight = effective_weight(raw) as u128;
             sum += weight;
             cumulative.push(sum);
             divisor = gcd(divisor, weight);
@@ -37,7 +42,7 @@ impl Picker {
         if policy == LbPolicy::WeightedRoundRobin && divisor > 0 && sum / divisor <= 512 {
             let weights: Vec<i64> = weights
                 .iter()
-                .map(|&w| ((if w > 0 { w as u128 } else { 100 }) / divisor) as i64)
+                .map(|&w| ((effective_weight(w) as u128) / divisor) as i64)
                 .collect();
             let total: i64 = weights.iter().sum();
             let mut credit = vec![0; weights.len()];

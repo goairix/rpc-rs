@@ -1,7 +1,7 @@
 use crate::{
     DiscoveredService, DiscoveryError, DiscoveryOptions, DiscoverySubscription, LbPolicy, Resolver,
     Snapshot,
-    balancer::Picker,
+    balancer::{Picker, effective_weight},
     transport::{self, Routes, SharedRoutes},
 };
 use arc_swap::ArcSwap;
@@ -174,14 +174,22 @@ async fn run(
                 };
                 // Providers may publish all instances, including those being drained.
                 let eligible = |m: &rpc_naming::ServiceMetadata| m.status == ServiceStatus::Up && !m.address.is_empty();
+                let mut routing_changed = false;
                 nodes.retain(|id, node| {
                     let retain = members.get(id).is_some_and(|m| eligible(m) && m.address == node.address);
-                    if !retain { node.worker.abort(); }
+                    if !retain {
+                        routing_changed |= node.channel.is_some();
+                        node.worker.abort();
+                    }
                     retain
                 });
                 for (id, member) in members.iter().filter(|(_, m)| eligible(m)) {
+                    let weight = effective_weight(member.weight);
                     if let Some(node) = nodes.get_mut(id) {
-                        node.weight = member.weight;
+                        routing_changed |= node.channel.is_some()
+                            && options.policy == LbPolicy::WeightedRoundRobin
+                            && node.weight != weight;
+                        node.weight = weight;
                         continue;
                     }
                     generation += 1;
@@ -189,10 +197,13 @@ async fn run(
                         id.clone(), generation, member.address.clone(), options.clone(), tx.clone(),
                     ));
                     nodes.insert(id.clone(), Node {
-                        address: member.address.clone(), weight: member.weight,
+                        address: member.address.clone(), weight,
                         generation, channel: None, worker,
                     });
                 }
+                // New workers publish their channel once connected. Until then, an
+                // unchanged ready set must keep its picker and current round-robin ticket.
+                if !routing_changed { continue; }
             }
             event = events.recv() => {
                 let Some(event) = event else { break };

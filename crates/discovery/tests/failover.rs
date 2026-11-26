@@ -141,6 +141,17 @@ async fn run_policy(policy: LbPolicy) {
         "from handler"
     );
     assert_eq!(discovery.ready_count(), 2);
+    if policy != LbPolicy::PickFirst {
+        // Each refresh publishes the same endpoints. Each pair of calls must
+        // still reach both instances, including across refresh boundaries.
+        let mut first_count = 0;
+        for _ in 0..12 {
+            discovery.refresh().await.unwrap();
+            sleep(Duration::from_millis(15)).await;
+            first_count += usize::from(call(&mut client, false).await.unwrap() == 1);
+        }
+        assert_eq!(first_count, 6);
+    }
     // The generated client uses two distinct health values as response instance IDs.
     if policy == LbPolicy::WeightedRoundRobin {
         for (wa, wb) in [(5, 1), (1, 5)] {
