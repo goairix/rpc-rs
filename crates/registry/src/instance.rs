@@ -119,19 +119,44 @@ impl Instance {
 impl Context {
     /// Finish or roll back each grant even when the caller stops waiting for registration.
     async fn establish(&mut self) -> Result<Lease, RegistryError> {
+        self.establish_with(Client::lease_keep_alive).await
+    }
+
+    /// Opening the streaming RPC is part of registration: even if Put succeeded,
+    /// failure to establish keepalive must roll the newly granted lease back.
+    async fn establish_with(
+        &mut self,
+        open: impl AsyncFnOnce(
+            &mut Client,
+            i64,
+        )
+            -> Result<(LeaseKeeper, LeaseKeepAliveStream), etcd_client::Error>
+        + Send,
+    ) -> Result<Lease, RegistryError> {
         let id = self
             .client
             .lease_grant(self.config.lease_ttl.as_secs() as i64, None)
             .await?
             .id();
-        let result = self.attach(id).await;
+        let result = async {
+            let revision = self.put(id).await?;
+            let (keeper, stream) =
+                timeout(self.config.timeout, open(&mut self.client, id)).await??;
+            Ok(Lease {
+                id,
+                revision,
+                keeper,
+                stream,
+            })
+        }
+        .await;
         if result.is_err() {
             let _ = self.revoke(id).await;
         }
         result
     }
 
-    async fn attach(&mut self, id: i64) -> Result<Lease, RegistryError> {
+    async fn put(&mut self, id: i64) -> Result<i64, RegistryError> {
         let value = serde_json::to_vec(&*self.record.lock().unwrap())
             .expect("registration fields serialize to JSON");
         let put = self
@@ -142,18 +167,10 @@ impl Context {
                 Some(PutOptions::new().with_lease(id)),
             )
             .await?;
-        let revision = put
+        Ok(put
             .header()
             .ok_or(RegistryError::Invalid("missing Put revision"))?
-            .revision();
-        let (keeper, stream) =
-            timeout(self.config.timeout, self.client.lease_keep_alive(id)).await??;
-        Ok(Lease {
-            id,
-            revision,
-            keeper,
-            stream,
-        })
+            .revision())
     }
 
     async fn revoke(&mut self, id: i64) -> Result<(), RegistryError> {

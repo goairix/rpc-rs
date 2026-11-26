@@ -270,3 +270,36 @@ async fn put_failure_revokes_granted_lease() {
     assert!(client.leases().await.unwrap().leases().is_empty());
     registry.close().await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "starts its own etcd server (requires ETCD_BIN or etcd in PATH)"]
+async fn keepalive_setup_failure_revokes_key_and_lease() {
+    let cluster = Cluster::start().await;
+    let mut client = cluster.config.connect_client().await.unwrap();
+    let key = format!("/{}/example.Echo/1", cluster.config.namespace);
+    let (updates, _changes) = mpsc::channel(1);
+    let mut ctx = Context {
+        client: client.clone(),
+        config: Arc::new(cluster.config.clone()),
+        key: key.clone(),
+        record: Arc::new(Mutex::new(ServiceMetadata::default())),
+        updates,
+    };
+    let error = ctx
+        .establish_with(async |client, id| {
+            let kv = client.get(key.clone(), None).await?;
+            assert_eq!(kv.kvs()[0].lease(), id);
+            Err(etcd_client::Error::LeaseKeepAliveError(
+                "injected stream failure".into(),
+            ))
+        })
+        .await;
+    assert!(matches!(
+        error,
+        Err(RegistryError::Etcd(
+            etcd_client::Error::LeaseKeepAliveError(_)
+        ))
+    ));
+    assert!(client.get(key, None).await.unwrap().kvs().is_empty());
+    assert!(client.leases().await.unwrap().leases().is_empty());
+}

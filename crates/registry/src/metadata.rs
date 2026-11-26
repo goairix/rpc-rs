@@ -77,6 +77,16 @@ pub struct ServiceMetadata {
 mod tests {
     use super::*;
     #[test]
+    fn decodes_go_marshalled_service_metadata() {
+        let record: ServiceMetadata =
+            serde_json::from_str(include_str!("../tests/fixtures/go-record.json")).unwrap();
+        assert_eq!(record.service_name, "example.Echo");
+        assert_eq!(record.instance_id, "go-instance");
+        assert_eq!(record.register_time, 1_700_000_000);
+        assert_eq!(record.status, ServiceStatus::Up);
+        assert!(record.tags.is_empty() && record.properties.is_empty());
+    }
+    #[test]
     fn go_nil_collections_and_missing_fields() {
         let record: ServiceMetadata = serde_json::from_str(
             r#"{"service_name":"Echo","tags":null,"properties":null,"extra":1}"#,
