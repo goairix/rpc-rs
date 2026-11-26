@@ -75,7 +75,7 @@ impl UnaryPolicy {
             .metadata()
             .get("grpc-timeout")
             .and_then(|value| value.to_str().ok())
-            .and_then(wire_timeout)
+            .and_then(crate::deadline::wire_timeout)
             .and_then(|duration| Instant::now().checked_add(duration));
         let deadline = deadline.into_iter().chain(request_deadline).min();
         let permit = self
@@ -133,24 +133,6 @@ impl UnaryPolicy {
         }
         result
     }
-}
-
-/// Parse the gRPC TimeoutValue (up to eight decimal digits) and TimeoutUnit.
-fn wire_timeout(value: &str) -> Option<Duration> {
-    let (unit, digits) = value.as_bytes().split_last()?;
-    if digits.len() > 8 || !digits.iter().all(u8::is_ascii_digit) {
-        return None;
-    }
-    let amount = std::str::from_utf8(digits).ok()?.parse::<u64>().ok()?;
-    Some(match unit {
-        b'H' => Duration::from_secs(amount * 3600),
-        b'M' => Duration::from_secs(amount * 60),
-        b'S' => Duration::from_secs(amount),
-        b'm' => Duration::from_millis(amount),
-        b'u' => Duration::from_micros(amount),
-        b'n' => Duration::from_nanos(amount),
-        _ => return None,
-    })
 }
 
 fn expired() -> Status {

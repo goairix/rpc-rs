@@ -8,6 +8,7 @@ default = ["etcd"]
 etcd = ["rpc-naming/etcd"]
 
 [dependencies]
+rpc-governance = { path = "../governance" }
 arc-swap = "1"
 fastrand = "2"
 http = "1"

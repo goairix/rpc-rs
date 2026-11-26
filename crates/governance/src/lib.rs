@@ -1,5 +1,6 @@
 //! Opt-in policies for typed unary RPCs.
 mod breaker;
+pub mod deadline;
 mod unary;
 
 pub use breaker::{BreakerConfig, CircuitBreaker};

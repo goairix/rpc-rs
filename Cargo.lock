@@ -843,6 +843,7 @@ dependencies = [
  "http",
  "http-body-util",
  "hyper-util",
+ "rpc-governance",
  "rpc-naming",
  "serde_json",
  "tempfile",

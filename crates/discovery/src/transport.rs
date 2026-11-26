@@ -120,8 +120,22 @@ impl Service<Request<Body>> for DiscoveredService {
             let response = Status::unavailable(&routes.reason).into_http();
             return Box::pin(async move { Ok(response) });
         };
+        let deadline = rpc_governance::deadline::from_headers(request.headers());
         Box::pin(async move {
             let _permit = permit;
+            if let Some(end) = deadline {
+                use rpc_governance::deadline::limit_body;
+                let request = request.map(|body| limit_body(body, end));
+                return Ok(
+                    match tokio::time::timeout_at(end, channel.oneshot(request)).await {
+                        Ok(result) if tokio::time::Instant::now() < end => match result {
+                            Ok(response) => response.map(|body| limit_body(body, end)),
+                            Err(error) => request_status(Box::new(error)).into_http(),
+                        },
+                        _ => Status::deadline_exceeded("RPC deadline exceeded").into_http(),
+                    },
+                );
+            }
             Ok(match channel.oneshot(request).await {
                 Ok(response) => response,
                 Err(error) => request_status(Box::new(error)).into_http(),

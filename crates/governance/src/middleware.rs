@@ -156,6 +156,7 @@ where
     }
 
     fn call(&mut self, req: Request<B>) -> Self::Future {
+        let deadline = crate::deadline::from_headers(req.headers());
         let method = req.uri().path().to_owned();
         let rejected = self
             .layer
@@ -189,6 +190,10 @@ where
                 return Ok(response);
             }
             Ok(response.map(|inner| {
+                let inner = match deadline {
+                    Some(end) => crate::deadline::limit_body(inner, end),
+                    None => inner,
+                };
                 Body::new(ObservedBody {
                     inner,
                     call,

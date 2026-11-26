@@ -324,3 +324,76 @@ async fn failed_start_revokes_only_created_registration_and_lease() {
     registry.close().await.unwrap();
     first_server.shutdown().await.unwrap();
 }
+
+/// Each side must enforce a streaming deadline even when its peer only runs tonic.
+#[tokio::test]
+async fn both_transports_expire_an_open_bidi_stream_after_headers() {
+    use rpc_rs::{discovery::Discovery, naming::static_registry::StaticRegistry};
+    use tokio_stream::wrappers::TcpListenerStream;
+    let (socket, addr) = listener().await;
+    let server = RpcServer::default().with_reflection().start(socket, None);
+    let (tx, rx) = mpsc::channel(1);
+    tx.send(list_services()).await.unwrap();
+    let budget = Duration::from_millis(200);
+    let mut req = tonic::Request::new(ReceiverStream::new(rx));
+    req.set_timeout(budget);
+    let mut replies = ServerReflectionClient::new(connect(addr).await)
+        .server_reflection_info(req)
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(replies.message().await.unwrap().is_some());
+    assert_eq!(
+        timeout(LIMIT, replies.message())
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code(),
+        Code::DeadlineExceeded
+    );
+    drop(tx);
+    server.shutdown().await.unwrap();
+
+    let (socket, addr) = listener().await;
+    let service = tonic_reflection::server::Builder::configure()
+        .build_v1()
+        .unwrap();
+    let task = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(service)
+            .serve_with_incoming(TcpListenerStream::new(socket)),
+    );
+    let json = format!(
+        r#"{{"instances":[{{"service_name":"echo","ip":"127.0.0.1","port":{}}}]}}"#,
+        addr.port()
+    );
+    let directory = StaticRegistry::from_reader(json.as_bytes()).unwrap();
+    let mut discovery = Discovery::connect(&directory, "echo", Default::default())
+        .await
+        .unwrap();
+    timeout(LIMIT, async {
+        while discovery.ready_count() == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let (tx, rx) = mpsc::channel(1);
+    tx.send(list_services()).await.unwrap();
+    let mut req = tonic::Request::new(ReceiverStream::new(rx));
+    req.set_timeout(budget);
+    let mut replies = ServerReflectionClient::new(discovery.service())
+        .server_reflection_info(req)
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(replies.message().await.unwrap().is_some());
+    // The outbound producer must be released even if the application stops polling replies.
+    timeout(LIMIT, tx.closed()).await.unwrap();
+    assert_eq!(
+        replies.message().await.unwrap_err().code(),
+        Code::DeadlineExceeded
+    );
+    discovery.close().await;
+    task.abort();
+}
