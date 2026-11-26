@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 use tokio::{
     sync::{mpsc, oneshot, watch},
@@ -74,6 +74,21 @@ impl Drop for Inner {
 #[derive(Clone)]
 pub struct EtcdRegistry(Arc<Inner>);
 
+/// Non-owning registry reference for callbacks that need to register or remove services.
+#[derive(Clone)]
+pub struct WeakEtcdRegistry(Weak<Inner>);
+
+impl WeakEtcdRegistry {
+    /// Temporarily acquire a handle while the registry is open. A concurrent close can
+    /// still cause a subsequent registry operation to return `RegistryError::Closed`.
+    pub fn upgrade(&self) -> Option<EtcdRegistry> {
+        self.0
+            .upgrade()
+            .filter(|inner| !inner.stop.is_cancelled())
+            .map(EtcdRegistry)
+    }
+}
+
 impl EtcdRegistry {
     /// Connect to etcd and initialize independent per-service registration workers on demand.
     pub async fn connect(config: EtcdConfig) -> Result<Self, RegistryError> {
@@ -110,6 +125,12 @@ impl EtcdRegistry {
         })))
     }
 
+    /// Obtain a non-owning reference. Capture it in observers and upgrade it when
+    /// accessing the registry to let the last application handle trigger shutdown.
+    pub fn downgrade(&self) -> WeakEtcdRegistry {
+        WeakEtcdRegistry(Arc::downgrade(&self.0))
+    }
+
     /// Clone the configured client, sharing its underlying etcd connection pool.
     pub fn client(&self) -> Client {
         self.0.client.clone()
@@ -121,6 +142,8 @@ impl EtcdRegistry {
     }
 
     /// Register an async observer of governance changes. Each invocation receives an owned record.
+    /// The registry retains observers until close. Use [`Self::downgrade`] for
+    /// reentrant access because capturing an owning clone creates a reference cycle.
     pub fn on_status_change<F, Fut>(&self, callback: F)
     where
         F: Fn(ServiceMetadata) -> Fut + Send + Sync + 'static,

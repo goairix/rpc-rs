@@ -198,12 +198,14 @@ async fn idempotent_registration_reentrant_removal_and_stale_owner() {
     let kv = &list.kvs()[0];
     let mut value: ServiceMetadata = serde_json::from_slice(kv.value()).unwrap();
     let (tx, mut rx) = mpsc::channel(1);
-    let nested = registry.clone();
+    let observer_registry = registry.downgrade();
     registry.on_status_change(move |record| {
-        let nested = nested.clone();
+        let nested = observer_registry.clone();
         let tx = tx.clone();
         async move {
-            if record.status == ServiceStatus::Down {
+            if record.status == ServiceStatus::Down
+                && let Some(nested) = nested.upgrade()
+            {
                 nested.unregister(&record.service_name).await.unwrap();
                 tx.send(()).await.unwrap();
             }
@@ -246,9 +248,11 @@ async fn idempotent_registration_reentrant_removal_and_stale_owner() {
     assert_ne!(entries.kvs()[0].lease(), kv.lease());
     // Stop during the recovery backoff; close must not recreate the revoked key.
     client.lease_revoke(entries.kvs()[0].lease()).await.unwrap();
+    let observer_registry = registry.downgrade();
     let (a, b) = tokio::join!(registry.close(), registry.close());
     a.unwrap();
     b.unwrap();
+    assert!(observer_registry.upgrade().is_none());
     assert!(registry.register(opts).await.is_err());
     sleep(Duration::from_millis(850)).await;
     assert!(
@@ -309,4 +313,55 @@ async fn keepalive_setup_failure_revokes_key_and_lease() {
     ));
     assert!(client.get(key, None).await.unwrap().kvs().is_empty());
     assert!(client.leases().await.unwrap().leases().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "starts its own etcd server (requires ETCD_BIN or etcd in PATH)"]
+async fn callback_allows_last_owner_drop_to_release_registration() {
+    let cluster = Cluster::start().await;
+    let registry = EtcdRegistry::connect(cluster.config.clone()).await.unwrap();
+    let mut client = registry.client();
+    let observer_registry = registry.downgrade();
+    registry.on_status_change(move |record| {
+        let nested = observer_registry.clone();
+        async move {
+            if record.status == ServiceStatus::Down
+                && let Some(nested) = nested.upgrade()
+            {
+                nested.unregister(&record.service_name).await.unwrap();
+            }
+        }
+    });
+    let Registration::Created(handle) = registry
+        .register(RegistrationOptions {
+            service_name: "example.Echo".into(),
+            address: "localhost:1234".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected a new registration")
+    };
+    let key = format!(
+        "/{}/{}/{}",
+        registry.namespace(),
+        handle.service_name,
+        handle.instance_id
+    );
+    assert_eq!(client.get(key.as_str(), None).await.unwrap().kvs().len(), 1);
+    drop(registry);
+    timeout(Duration::from_secs(5), async {
+        while !client
+            .get(key.as_str(), None)
+            .await
+            .unwrap()
+            .kvs()
+            .is_empty()
+        {
+            sleep(Duration::from_millis(40)).await;
+        }
+    })
+    .await
+    .expect("last owner drop should stop renewing the registration");
 }

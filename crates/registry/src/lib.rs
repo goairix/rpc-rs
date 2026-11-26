@@ -26,4 +26,4 @@ pub enum RegistryError {
 
 mod instance;
 mod registry;
-pub use registry::{EtcdRegistry, Registration, RegistrationHandle};
+pub use registry::{EtcdRegistry, Registration, RegistrationHandle, WeakEtcdRegistry};
