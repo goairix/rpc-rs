@@ -1,10 +1,11 @@
 use crate::{
-    DiscoveredService, DiscoveryError, DiscoveryOptions, LbPolicy, Snapshot, Subscription,
+    DiscoveredService, DiscoveryError, DiscoveryOptions, DiscoverySubscription, LbPolicy, Resolver,
+    Snapshot,
     balancer::Picker,
     transport::{self, Routes, SharedRoutes},
 };
 use arc_swap::ArcSwap;
-use rpc_registry::EtcdConfig;
+use rpc_registry::ServiceStatus;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::{
     sync::{mpsc, watch},
@@ -13,9 +14,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Channel;
 
-/// Owns a single prefix subscription, connection workers and client routing state.
+/// Owns a service subscription, connection workers and client routing state.
 pub struct Discovery {
-    subscription: Subscription,
+    subscription: Box<dyn DiscoverySubscription>,
     service: DiscoveredService,
     routes: SharedRoutes,
     stop: CancellationToken,
@@ -24,7 +25,7 @@ pub struct Discovery {
 impl Discovery {
     /// Read the service snapshot and start dialing up instances. Initial dialing is asynchronous.
     pub async fn connect(
-        config: &EtcdConfig,
+        resolver: &dyn Resolver,
         service: &str,
         options: DiscoveryOptions,
     ) -> Result<Self, DiscoveryError> {
@@ -37,7 +38,7 @@ impl Discovery {
                 "{service}: zero connection or keepalive timeout"
             )));
         }
-        let subscription = Subscription::connect(config, service, options.resync).await?;
+        let subscription = resolver.subscribe(service, options.resync).await?;
         let routes = Arc::new(ArcSwap::from_pointee(Routes::empty(
             "no available instance",
         )));
@@ -65,7 +66,7 @@ impl Discovery {
     pub fn ready_count(&self) -> usize {
         self.routes.load().channels.len()
     }
-    /// Force a fresh etcd snapshot; transport reconciliation proceeds asynchronously.
+    /// Force a fresh membership snapshot; transport reconciliation proceeds asynchronously.
     pub async fn refresh(&self) -> Result<(), DiscoveryError> {
         self.subscription.refresh().await
     }
@@ -171,12 +172,14 @@ async fn run(
                     Ok(members) => members,
                     Err(error) => { reason = error.to_string(); break; }
                 };
+                // Providers may publish all instances, including those being drained.
+                let eligible = |m: &rpc_registry::ServiceMetadata| m.status == ServiceStatus::Up && !m.address.is_empty();
                 nodes.retain(|id, node| {
-                    let retain = members.get(id).is_some_and(|m| m.address == node.address);
+                    let retain = members.get(id).is_some_and(|m| eligible(m) && m.address == node.address);
                     if !retain { node.worker.abort(); }
                     retain
                 });
-                for (id, member) in members {
+                for (id, member) in members.iter().filter(|(_, m)| eligible(m)) {
                     if let Some(node) = nodes.get_mut(id) {
                         node.weight = member.weight;
                         continue;

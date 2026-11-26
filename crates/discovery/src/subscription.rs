@@ -1,3 +1,4 @@
+use crate::{DiscoveryError, DiscoverySubscription, Resolver, Snapshot};
 use etcd_client::{Client, EventType, GetOptions, KeyValue, WatchOptions};
 use rpc_registry::{EtcdConfig, ServiceMetadata, ServiceStatus};
 use std::{collections::BTreeMap, time::Duration};
@@ -10,14 +11,6 @@ use tokio_util::sync::CancellationToken;
 
 type Members = BTreeMap<String, ServiceMetadata>;
 type Refresh = oneshot::Sender<Result<(), DiscoveryError>>;
-
-/// Failure of an etcd operation or a discovery lifecycle operation.
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("{0}")]
-pub struct DiscoveryError(pub(crate) String);
-
-/// Latest set of registry entries eligible for dialing. A permanent watch error replaces the set.
-pub type Snapshot = Result<BTreeMap<String, ServiceMetadata>, DiscoveryError>;
 
 /// Owns one service-prefix watch and publishes complete, revision-consistent snapshots.
 pub struct Subscription {
@@ -99,6 +92,32 @@ impl Subscription {
         if let Some(task) = self.task.take() {
             let _ = task.await;
         }
+    }
+}
+
+#[tonic::async_trait]
+impl Resolver for EtcdConfig {
+    async fn subscribe(
+        &self,
+        service: &str,
+        resync: Duration,
+    ) -> Result<Box<dyn DiscoverySubscription>, DiscoveryError> {
+        Ok(Box::new(
+            Subscription::connect(self, service, resync).await?,
+        ))
+    }
+}
+
+#[tonic::async_trait]
+impl DiscoverySubscription for Subscription {
+    fn snapshots(&self) -> watch::Receiver<Snapshot> {
+        self.snapshots()
+    }
+    async fn refresh(&self) -> Result<(), DiscoveryError> {
+        self.refresh().await
+    }
+    async fn close(&mut self) {
+        self.close().await
     }
 }
 
