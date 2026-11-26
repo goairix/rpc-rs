@@ -4,7 +4,34 @@ pub mod metadata;
 pub use config::EtcdConfig;
 pub use metadata::{RegistrationOptions, ServiceMetadata, ServiceStatus};
 
-/// An etcd request, lifecycle or configuration error.
+/// Identifies exactly the registration this caller created.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegistrationHandle {
+    /// Fully qualified service name used to locate the local worker.
+    pub service_name: String,
+    /// Stable instance ID checked before unregistering.
+    pub instance_id: String,
+}
+
+/// Only a newly created registration grants an ownership handle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Registration {
+    /// This request established the instance and owns its removal.
+    Created(RegistrationHandle),
+    /// A previous request already registered this name.
+    Existing,
+}
+
+/// Register services before serving; only entries created by this server are removed.
+#[tonic::async_trait]
+pub trait Registry: Send + Sync + 'static {
+    /// Publish metadata or report that another owner already registered this name.
+    async fn register(&self, options: RegistrationOptions) -> Result<Registration, RegistryError>;
+    /// Withdraw exactly the registration represented by this handle.
+    async fn unregister_handle(&self, handle: &RegistrationHandle) -> Result<(), RegistryError>;
+}
+
+/// A backend, lifecycle or configuration error.
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
     /// Invalid local configuration or registration.
@@ -13,6 +40,9 @@ pub enum RegistryError {
     /// The registry has started closing.
     #[error("registry closed")]
     Closed,
+    /// An application-supplied registry failed. The original error is available as its source.
+    #[error(transparent)]
+    Backend(Box<dyn std::error::Error + Send + Sync>),
     /// etcd returned an error.
     #[error(transparent)]
     Etcd(#[from] etcd_client::Error),
@@ -26,4 +56,4 @@ pub enum RegistryError {
 
 mod instance;
 mod registry;
-pub use registry::{EtcdRegistry, Registration, RegistrationHandle, WeakEtcdRegistry};
+pub use registry::{EtcdRegistry, WeakEtcdRegistry};

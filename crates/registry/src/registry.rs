@@ -1,4 +1,7 @@
-use crate::{EtcdConfig, RegistrationOptions, RegistryError, ServiceMetadata, instance::Instance};
+use crate::{
+    EtcdConfig, Registration, RegistrationHandle, RegistrationOptions, Registry, RegistryError,
+    ServiceMetadata, instance::Instance,
+};
 use etcd_client::Client;
 use std::{
     collections::HashMap,
@@ -16,22 +19,14 @@ type Callback =
     Arc<dyn Fn(ServiceMetadata) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 type Completion = watch::Receiver<Option<Result<(), String>>>;
 
-/// Identifies exactly the registration this caller created.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RegistrationHandle {
-    /// Fully qualified service name used to locate the local worker.
-    pub service_name: String,
-    /// Stable instance ID checked before unregistering.
-    pub instance_id: String,
-}
-
-/// Only a newly created registration grants an ownership handle.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Registration {
-    /// This request established the instance and its lease.
-    Created(RegistrationHandle),
-    /// A previous request already registered this name.
-    Existing,
+#[tonic::async_trait]
+impl Registry for EtcdRegistry {
+    async fn register(&self, options: RegistrationOptions) -> Result<Registration, RegistryError> {
+        EtcdRegistry::register(self, options).await
+    }
+    async fn unregister_handle(&self, h: &RegistrationHandle) -> Result<(), RegistryError> {
+        EtcdRegistry::unregister_handle(self, h).await
+    }
 }
 
 enum Command {

@@ -1,9 +1,7 @@
 //! Typed service assembly and ownership of server registrations.
 use crate::{
     governance::{GovernanceLayer, TokenBucket},
-    registry::{
-        EtcdRegistry, Registration, RegistrationHandle, RegistrationOptions, RegistryError,
-    },
+    registry::{Registration, RegistrationHandle, RegistrationOptions},
 };
 use prost::Message;
 use std::{collections::HashSet, convert::Infallible, future::Future, sync::Arc};
@@ -15,24 +13,7 @@ use tower::Service;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Register services before serving; only entries created by this server are removed.
-#[tonic::async_trait]
-pub trait Registry: Send + Sync + 'static {
-    /// Publish metadata or report that another owner already registered this name.
-    async fn register(&self, options: RegistrationOptions) -> Result<Registration, RegistryError>;
-    /// Withdraw exactly the registration represented by this handle.
-    async fn unregister_handle(&self, handle: &RegistrationHandle) -> Result<(), RegistryError>;
-}
-
-#[tonic::async_trait]
-impl Registry for EtcdRegistry {
-    async fn register(&self, options: RegistrationOptions) -> Result<Registration, RegistryError> {
-        EtcdRegistry::register(self, options).await
-    }
-    async fn unregister_handle(&self, h: &RegistrationHandle) -> Result<(), RegistryError> {
-        EtcdRegistry::unregister_handle(self, h).await
-    }
-}
+pub use crate::registry::Registry;
 
 /// Builder for tonic routes, descriptors and optional service discovery.
 #[derive(Default)]
