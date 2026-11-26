@@ -196,19 +196,28 @@ def weighted(stack, server, client, env):
 def run(mode, go, rust, tmp):
     env = os.environ.copy()
     env.pop("ETCD_ENDPOINT", None)
+    env.pop("RPC_STATIC_FILE", None)
     env.pop("RPC_LIMIT_ALL", None)
     env["RPC_NAMESPACE"] = "interop-" + uuid.uuid4().hex
     with ExitStack() as stack:
         if mode == "all":
             env["ETCD_ENDPOINT"] = start_etcd(stack, tmp, env)
-        elif mode != "direct":
-            raise ValueError("expected direct or all")
+        elif mode not in ("direct", "static"):
+            raise ValueError("expected direct, static or all")
         for server, client, identity in [(go, rust, "go"), (rust, go, "rust")]:
             with ExitStack() as peers:
                 addr = address()
+                if mode == "static":
+                    ip, port = addr.rsplit(":", 1)
+                    config = tmp / "services.json"
+                    config.write_text(json.dumps({"instances": [
+                        {"service_name": "interop.Echo", "ip": ip, "port": int(port)}
+                    ]}))
+                    env["RPC_STATIC_FILE"] = str(config)
                 proc = launch(peers, [server, "serve", addr, identity], env)
                 wait_for(proc, lambda: listening(addr))
-                target = "discovery" if mode == "all" else addr
+                by_name = mode == "all" or (mode == "static" and client == rust)
+                target = "discovery" if by_name else addr
                 reply = subprocess.check_output(
                     [client, "check", target], env=env, text=True, timeout=20
                 )

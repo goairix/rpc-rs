@@ -231,7 +231,7 @@ fn config() -> Result<rpc_rs::registry::EtcdConfig, Error> {
 /// Serve the same generated implementation with optional discovery registration.
 async fn serve(addr: &str, id: &str) -> Result<(), Error> {
     use rpc_rs::{
-        registry::{EtcdRegistry, RegistrationOptions},
+        registry::{EtcdRegistry, RegistrationOptions, Registry},
         server::RpcServer,
     };
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -239,6 +239,12 @@ async fn serve(addr: &str, id: &str) -> Result<(), Error> {
         Some(EtcdRegistry::connect(config()?).await?)
     } else {
         None
+    };
+    let backend: Option<std::sync::Arc<dyn Registry>> = match std::env::var_os("RPC_STATIC_FILE") {
+        Some(path) => Some(std::sync::Arc::new(
+            rpc_rs::static_registry::StaticRegistry::from_file(path)?,
+        )),
+        None => registry.clone().map(|r| std::sync::Arc::new(r) as _),
     };
     let mut builder = RpcServer::default()
         .with_reflection()
@@ -254,10 +260,7 @@ async fn serve(addr: &str, id: &str) -> Result<(), Error> {
             }),
             RegistrationOptions::default(),
         )
-        .start(
-            listener,
-            registry.clone().map(|r| std::sync::Arc::new(r) as _),
-        );
+        .start(listener, backend);
     // The harness terminates this peer with SIGTERM; wait for lease revocation before exiting.
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = server
@@ -278,7 +281,15 @@ async fn discovered(mode: &str) -> Result<(), Error> {
         policy: LbPolicy::WeightedRoundRobin,
         ..Default::default()
     };
-    let mut discovery = Discovery::connect(&config()?, "interop.Echo", options).await?;
+    let static_file = std::env::var_os("RPC_STATIC_FILE");
+    let go_framework = static_file.is_none();
+    let mut discovery = match static_file {
+        Some(path) => {
+            let directory = rpc_rs::static_registry::StaticRegistry::from_file(path)?;
+            Discovery::connect(&directory, "interop.Echo", options).await?
+        }
+        None => Discovery::connect(&config()?, "interop.Echo", options).await?,
+    };
     tokio::time::timeout(Duration::from_secs(5), async {
         while discovery.ready_count() == 0 {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -287,7 +298,7 @@ async fn discovered(mode: &str) -> Result<(), Error> {
     .await?;
     let mut client = EchoClient::new(discovery.service());
     match mode {
-        "check" => check(client, true).await?,
+        "check" => check(client, go_framework).await?,
         "limited" => assert_eq!(
             client.say(msg(0, "test")).await.unwrap_err().code(),
             tonic::Code::Unknown

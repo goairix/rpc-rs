@@ -63,10 +63,11 @@ let client = EchoClient::new(discovery.service());
 
 ```sh
 interop/run.sh direct
+interop/run.sh static
 interop/run.sh all
 ```
 
-`direct` 启动两种语言的测试进程，通过 TCP 直连。 `all` 启动专用 etcd 和真实的框架服务端，用服务名进行发现，运行四种 RPC、标准错误、metadata、超时、取消、限流及权重热更新用例。每个方向使用两个同名实例验证加权分流，脚本退出时关闭子进程并清理临时目录。
+`direct` 启动两种语言的测试进程，通过 TCP 直连。`static` 使用临时 JSON 配置验证 Rust 客户端按服务名调用 Go，以及 Go 客户端直连经静态目录校验的 Rust 服务端。 `all` 启动专用 etcd 和真实的框架服务端，用服务名进行发现，运行四种 RPC、标准错误、metadata、超时、取消、限流及权重热更新用例。每个方向使用两个同名实例验证加权分流，脚本退出时关闭子进程并清理临时目录。
 
 需要 Rust/Cargo、Go、protoc、Python 3 和 Unix shell；`all` 还需要 etcd v3 服务端。可通过 `ETCD_BIN=/absolute/path/to/etcd interop/run.sh all` 指定可执行文件。已验证的组合为 Rust 1.95、Go 1.25.6、tonic 0.14.6、protoc 3.20.3 和 etcd 3.6.5。Go 测试桩已随仓库提供，Rust 桩在构建夹具时生成。
 
