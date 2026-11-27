@@ -5,7 +5,7 @@
 ## 目标与事实来源
 
 在当前空仓库实现与 `../rpc` Go 框架功能对应的 Rust 库。Go 与 Rust
-使用同一份业务 `.proto` 互调。注册和发现后端可替换，服务端依赖 `Registry`，客户端依赖 `Resolver`。etcd 是默认启用的可选实现；Go 与 Rust 的 etcd 互通使用同一个 namespace。
+使用同一份业务 `.proto` 互调。注册和发现后端可替换，服务端依赖 `Registry`，客户端依赖 `Resolver`。静态目录和 etcd 随库提供，由应用在运行时按服务选择。Go 与 Rust 的 etcd 互通使用同一个 namespace。
 功能范围和跨语言可观察行为以 Go 当前代码与测试为参照，历史设计文档仅供参考。
 Go 包是功能对标，不是 Rust 内部架构、公开 API 或实现算法的模板。
 

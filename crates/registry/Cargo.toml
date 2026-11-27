@@ -5,8 +5,8 @@ edition = "2024"
 description = "Service registration contracts and a Go-compatible etcd backend"
 
 [features]
-default = ["etcd"]
-etcd = ["rpc-naming/etcd"]
+# Kept for manifests that explicitly requested this feature before etcd became built-in.
+etcd = []
 
 [dependencies]
-rpc-naming = { path = "../naming", default-features = false }
+rpc-naming = { path = "../naming" }

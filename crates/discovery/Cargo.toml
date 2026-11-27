@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["etcd"]
-etcd = ["rpc-naming/etcd"]
+# Kept for manifests that explicitly requested this feature before etcd became built-in.
+etcd = []
 
 [dependencies]
 rpc-governance = { path = "../governance" }
@@ -14,7 +14,7 @@ fastrand = "2"
 http = "1"
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
-rpc-naming = { path = "../naming", default-features = false }
+rpc-naming = { path = "../naming" }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time", "io-util"] }
 tokio-util = "0.7"
@@ -27,15 +27,3 @@ serde_json = "1"
 tonic-health = "0.14"
 tokio-stream = { version = "0.1", features = ["net"] }
 tempfile = "3"
-
-[[test]]
-name = "discovery"
-required-features = ["etcd"]
-
-[[test]]
-name = "watch_recovery"
-required-features = ["etcd"]
-
-[[test]]
-name = "failover"
-required-features = ["etcd"]

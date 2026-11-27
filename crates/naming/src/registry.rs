@@ -51,7 +51,6 @@ pub enum RegistryError {
     /// An application-supplied registry failed. The original error is available as its source.
     #[error(transparent)]
     Backend(Box<dyn std::error::Error + Send + Sync>),
-    #[cfg(feature = "etcd")]
     /// etcd returned an error.
     #[error(transparent)]
     Etcd(#[from] etcd_client::Error),

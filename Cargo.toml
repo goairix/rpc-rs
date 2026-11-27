@@ -9,11 +9,11 @@ edition = "2024"
 description = "Go-compatible service discovery and governance for tonic"
 
 [features]
-default = ["etcd"]
-etcd = ["rpc-naming/etcd", "rpc-registry/etcd", "rpc-discovery/etcd"]
+# Kept for manifests that explicitly requested this feature before etcd became built-in.
+etcd = []
 
 [dependencies]
-rpc-naming = { path = "crates/naming", default-features = false }
+rpc-naming = { path = "crates/naming" }
 tonic = { version = "0.14", features = ["transport", "tls-ring"] }
 tonic-health = "0.14"
 tonic-reflection = "0.14"
@@ -23,8 +23,8 @@ tokio = { version = "1", features = ["macros", "rt", "net", "signal", "sync"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = "0.7"
 thiserror = "2"
-rpc-registry = { path = "crates/registry", default-features = false }
+rpc-registry = { path = "crates/registry" }
 rpc-governance = { path = "crates/governance" }
-rpc-discovery = { path = "crates/discovery", default-features = false }
+rpc-discovery = { path = "crates/discovery" }
 tower = "0.5"
 http = "1"

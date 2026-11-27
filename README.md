@@ -19,7 +19,7 @@ rpc-rs 为基于 tonic 的 Rust gRPC 服务提供注册、发现和负载均衡�
 cargo add rpc-rs --git https://github.com/goairix/rpc-rs.git
 ```
 
-默认启用 `etcd` 特性。仅使用静态发现或直连时，可在命令后加 `--no-default-features`。使用自己的 proto 时，生成客户端和服务端所需的依赖及 `build.rs` 配置见[接入指南](docs/integration.md)。
+etcd 和静态服务目录均为内置后端。应用在创建服务端或客户端时按配置选择，同一进程可以为不同服务使用不同后端。使用自己的 proto 时，生成客户端和服务端所需的依赖及 `build.rs` 配置见[接入指南](docs/integration.md)。
 
 ## 快速开始
 

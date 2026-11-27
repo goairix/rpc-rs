@@ -1,5 +1,4 @@
 //! Backend-independent contracts for publishing and resolving RPC services.
-#[cfg(feature = "etcd")]
 pub mod etcd;
 pub mod metadata;
 mod registry;
