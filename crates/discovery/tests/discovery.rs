@@ -21,11 +21,17 @@ async fn snapshots_and_transactions() {
         .put(format!("{prefix}a"), value("up", 1), None)
         .await
         .unwrap();
+    client
+        .put(format!("{prefix}untouched"), value("up", 100), None)
+        .await
+        .unwrap();
     let mut sub = Subscription::connect(&cfg, "echo", Duration::from_secs(3600))
         .await
         .unwrap();
     let mut rx = sub.snapshots();
     assert_eq!(rx.borrow_and_update().as_ref().unwrap()["a"].weight, 1);
+    // A delta for other instances must retain this record's string allocation.
+    let original_address = rx.borrow().as_ref().unwrap()["untouched"].address.as_ptr() as usize;
     client
         .txn(Txn::new().and_then(vec![
             TxnOp::put(format!("{prefix}a"), value("up", 5), None),
@@ -42,7 +48,11 @@ async fn snapshots_and_transactions() {
     {
         let updated = rx.borrow_and_update();
         let updated = updated.as_ref().unwrap();
-        assert_eq!(updated.len(), 2);
+        assert_eq!(updated.len(), 3);
+        assert_eq!(
+            updated["untouched"].address.as_ptr() as usize,
+            original_address
+        );
         assert_eq!(updated["a"].weight, 5);
     }
     sub.refresh().await.unwrap();

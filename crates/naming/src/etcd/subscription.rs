@@ -41,10 +41,9 @@ impl Subscription {
             client,
             prefix: format!("/{}/{service}/", config.namespace.trim_matches('/')),
             next_revision: 0,
-            members: Members::new(),
         };
-        state.reload().await.map_err(|e| state.snapshot_error(&e))?;
-        let (output, updates) = watch::channel(Ok(state.members.clone()));
+        let members = state.reload().await.map_err(|e| state.snapshot_error(&e))?;
+        let (output, updates) = watch::channel(Ok(members));
         let (refresh, requests) = mpsc::channel(1);
         let stop = CancellationToken::new();
         let token = stop.clone();
@@ -133,28 +132,24 @@ struct State {
     prefix: String,
     /// First revision not yet applied, including across transient reconnects.
     next_revision: i64,
-    members: Members,
 }
 
 impl State {
-    fn put(&mut self, kv: &KeyValue) {
-        let Ok(key) = kv.key_str() else { return };
-        let Some(id) = key
+    fn instance_id<'a>(&self, kv: &'a KeyValue) -> Option<&'a str> {
+        kv.key_str()
+            .ok()?
             .strip_prefix(&self.prefix)
             .filter(|id| !id.is_empty() && !id.contains('/'))
-        else {
-            return;
-        };
+    }
+
+    /// Invalid or ineligible records withdraw the instance from the published snapshot.
+    fn decode(kv: &KeyValue) -> Option<ServiceMetadata> {
         match serde_json::from_slice::<ServiceMetadata>(kv.value()) {
-            Ok(m) if m.status == ServiceStatus::Up && !m.address.is_empty() => {
-                self.members.insert(id.into(), m);
-            }
-            Ok(_) => {
-                self.members.remove(id);
-            }
+            Ok(m) if m.status == ServiceStatus::Up && !m.address.is_empty() => Some(m),
+            Ok(_) => None,
             Err(error) => {
-                tracing::warn!(key, %error, "invalid service registration");
-                self.members.remove(id);
+                tracing::warn!(key = ?kv.key_str(), %error, "invalid service registration");
+                None
             }
         }
     }
@@ -163,7 +158,7 @@ impl State {
         DiscoveryError(format!("{}: snapshot: {error}", self.prefix))
     }
 
-    async fn reload(&mut self) -> Result<(), etcd_client::Error> {
+    async fn reload(&mut self) -> Result<Members, etcd_client::Error> {
         let response = self
             .client
             .get(
@@ -176,11 +171,14 @@ impl State {
             .ok_or_else(|| etcd_client::Error::InvalidArgs("missing snapshot revision".into()))?
             .revision()
             + 1;
-        self.members.clear();
-        for kv in response.kvs() {
-            self.put(kv);
-        }
-        Ok(())
+        Ok(response
+            .kvs()
+            .iter()
+            .filter_map(|kv| {
+                let id = self.instance_id(kv)?;
+                Some((id.to_owned(), Self::decode(kv)?))
+            })
+            .collect())
     }
 
     async fn follow(
@@ -203,6 +201,7 @@ impl State {
             }
             // WatchCreated may report a newer header before replay has started. Only
             // advance from actual events and apply all entries of a transaction together.
+            let mut changes = Vec::new();
             let mut next = self.next_revision;
             for event in response.events() {
                 let Some(kv) = event.kv() else { continue };
@@ -210,20 +209,30 @@ impl State {
                     continue;
                 }
                 next = next.max(kv.mod_revision() + 1);
-                match event.event_type() {
-                    EventType::Put => self.put(kv),
-                    EventType::Delete => {
-                        if let Some(id) =
-                            kv.key_str().ok().and_then(|s| s.strip_prefix(&self.prefix))
-                        {
-                            self.members.remove(id);
-                        }
-                    }
+                if let Some(id) = self.instance_id(kv) {
+                    let member = match event.event_type() {
+                        EventType::Put => Self::decode(kv),
+                        EventType::Delete => None,
+                    };
+                    changes.push((id, member));
                 }
             }
             if next != self.next_revision {
+                // Decode outside the watch lock, then publish the whole response in one
+                // write. Untouched instances keep their metadata and backing allocations.
+                output.send_modify(|snapshot| {
+                    let members = snapshot
+                        .as_mut()
+                        .expect("only active watches publish changes");
+                    for (id, member) in changes {
+                        if let Some(member) = member {
+                            members.insert(id.to_owned(), member);
+                        } else {
+                            members.remove(id);
+                        }
+                    }
+                });
                 self.next_revision = next;
-                let _ = output.send_replace(Ok(self.members.clone()));
             }
         }
         Ok(End::Disconnected)
@@ -273,8 +282,8 @@ impl State {
                 }
             }
             let result = match self.reload().await {
-                Ok(()) => {
-                    let _ = output.send_replace(Ok(self.members.clone()));
+                Ok(members) => {
+                    let _ = output.send_replace(Ok(members));
                     Ok(())
                 }
                 Err(cause) => {
