@@ -5,7 +5,7 @@
 ## 工作依据
 
 - 开始改动前，先查[设计规格](docs/superpowers/specs/2026-11-26-rust-rpc-design.md)中的协议、默认值和状态码表；按[实施计划](docs/superpowers/plans/2026-11-26-rust-rpc.md)找到对应的验收用例。
-- 核对 Go 行为时，阅读相邻 `../rpc` 仓库的当前实现、测试与锁定依赖。Go 包用来对齐可观察行为；Rust 的模块、接口和并发模型按 Rust 习惯设计。互通夹具放在本仓库。
+- 核对 Go 行为时，阅读相邻 `../rpc` 仓库的当前实现、测试与锁定依赖。Go 包用来对齐可观察行为；Rust 的模块、接口和并发模型按 Rust 习惯设计。互通夹具放在本仓库的 `tests/interop/`。
 - 在当前工作目录开发。开始前检查 Git 状态，保留已有改动。创建 worktree、修改 Go 产品代码、推送或发布需有用户单独指示。
 - 小步提交。每完成一个可独立验证的小任务，就运行相关检查、审阅暂存差异并提交，再开始下一项。较大的任务按可验证的行为拆分；同一行为的实现、测试和必要文档一起提交。提交信息沿用 `feat:`、`fix:`、`test:`、`docs:` 等前缀。
 
@@ -36,7 +36,7 @@
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-interop/run.sh all
+tests/interop/run.sh all
 ```
 
 - 涉及协议、路由、错误或流生命周期时，使用真实 Go 和 Rust 进程，从双方框架的正常入口运行互通用例。验证权重热更新需使用两个同名实例，按响应实例 ID 统计交换权重前后的分布。

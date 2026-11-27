@@ -32,4 +32,4 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260724162435-b2f20204f0df // indirect
 )
 
-replace github.com/goairix/rpc => ../../../rpc
+replace github.com/goairix/rpc => ../../../../rpc
