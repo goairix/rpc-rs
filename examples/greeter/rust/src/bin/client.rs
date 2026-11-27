@@ -1,5 +1,9 @@
 use greeter_example::pb::{HelloRequest, greeter_client::GreeterClient};
-use rpc_rs::{discovery::Discovery, naming::static_registry::StaticRegistry};
+use greeter_example::{SERVICES_FILE, etcd_config};
+use rpc_rs::{
+    discovery::Discovery,
+    naming::{Resolver, static_registry::StaticRegistry},
+};
 use std::time::Duration;
 use tonic::Request;
 
@@ -25,9 +29,12 @@ async fn greet(discovery: &Discovery, name: String) -> Result<String, Error> {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let name = std::env::args().nth(1).unwrap_or_else(|| "Ada".into());
-    let directory = StaticRegistry::from_file("examples/greeter/services.json")?;
+    let resolver: Box<dyn Resolver> = match etcd_config()? {
+        Some(config) => Box::new(config),
+        None => Box::new(StaticRegistry::from_file(SERVICES_FILE)?),
+    };
     let mut discovery =
-        Discovery::connect(&directory, "example.v1.Greeter", Default::default()).await?;
+        Discovery::connect(resolver.as_ref(), "example.v1.Greeter", Default::default()).await?;
     let result = greet(&discovery, name).await;
     discovery.close().await;
     println!("{}", result?);

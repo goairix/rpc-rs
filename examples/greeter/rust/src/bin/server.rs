@@ -2,7 +2,11 @@ use greeter_example::pb::{
     HelloReply, HelloRequest,
     greeter_server::{Greeter, GreeterServer},
 };
-use rpc_rs::{naming::static_registry::StaticRegistry, server::RpcServer};
+use greeter_example::{SERVICES_FILE, etcd_config};
+use rpc_rs::{
+    naming::{Registry, etcd::EtcdRegistry, static_registry::StaticRegistry},
+    server::RpcServer,
+};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -29,13 +33,18 @@ impl Greeter for Greetings {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:45051").await?;
-    let directory = StaticRegistry::from_file("examples/greeter/services.json")?;
+    let registry: Arc<dyn Registry> = match etcd_config()? {
+        Some(config) => Arc::new(EtcdRegistry::connect(config).await?),
+        None => Arc::new(StaticRegistry::from_file(SERVICES_FILE)?),
+    };
     let server = RpcServer::default()
         .add_service(GreeterServer::new(Greetings), Default::default())
-        .start(listener, Some(Arc::new(directory)));
-    server
+        .start(listener, Some(registry.clone()));
+    let result = server
         .until(async {
             let _ = tokio::signal::ctrl_c().await;
         })
-        .await
+        .await;
+    registry.close().await?;
+    result
 }

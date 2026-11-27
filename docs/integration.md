@@ -64,6 +64,8 @@ let reply = client.say_hello(request).await?.into_inner();
 | etcd | `EtcdRegistry` 注册并维护租约 | `EtcdConfig` | watch 跟踪实例、状态和权重变化 |
 | 自定义后端 | 实现 `naming::Registry` | 实现 `naming::Resolver` 和 `DiscoverySubscription` | 订阅按稳定实例 ID 发布完整快照 |
 
+后端由应用在创建服务端或发现客户端时注入。同一进程可以让订单客户端通过 etcd 查找实例，同时让账单客户端读取静态目录。配置变更后，可创建使用新 resolver 的客户端，将后续请求交给它，再在旧客户端的在途请求结束后关闭旧的 `Discovery`。已有连接使用创建它时传入的后端。新增后端只需实现对应的注册或解析接口，业务 RPC 使用同一套生成代码。[运行时选择示例](../examples/greeter/README.md#运行时选择发现后端)
+
 ### 静态服务目录
 
 在 JSON 中填写服务名、可达的 IPv4 或 IPv6 地址和非零端口。同名服务可配置多个实例，`weight` 为可选正整数，默认 100。
