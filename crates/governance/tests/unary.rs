@@ -307,3 +307,26 @@ async fn fractional_retry_multiplier_respects_cap() {
     assert_eq!(result.unwrap_err().code(), Code::Unavailable);
     assert_eq!(elapsed, [0, 40, 100, 180, 260]);
 }
+
+#[tokio::test(start_paused = true)]
+async fn last_attempt_moves_the_original_payload() {
+    // A Vec clone has a different backing allocation while the original is live.
+    for attempts in [0, 1, 3] {
+        let payload = vec![42u8; 1024];
+        let original = payload.as_ptr() as usize;
+        let mut delivered_original = Vec::new();
+        let policy = UnaryPolicy::default().with_retry(RetryPolicy {
+            max_attempts: attempts,
+            ..Default::default()
+        });
+        let _ = policy
+            .call(Request::new(payload), None, |r| {
+                delivered_original.push(r.get_ref().as_ptr() as usize == original);
+                ready(Err::<(), _>(Status::unavailable("retry")))
+            })
+            .await;
+        assert_eq!(delivered_original.len(), attempts.max(1));
+        assert_eq!(delivered_original.pop(), Some(true));
+        assert!(delivered_original.iter().all(|original| !original));
+    }
+}

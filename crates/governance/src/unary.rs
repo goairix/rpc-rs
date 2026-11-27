@@ -84,40 +84,40 @@ impl UnaryPolicy {
             .map(CircuitBreaker::enter)
             .transpose()?;
         let operation = async {
-            let (metadata, extensions, message) = request.into_parts();
-            let mut attempts_left = self.retry.as_ref().map_or(1, |r| r.max_attempts.max(1));
-            let mut backoff = self
-                .retry
-                .as_ref()
-                .map_or(Duration::ZERO, |r| r.initial_backoff.min(r.max_backoff));
-            loop {
-                let mut request =
-                    Request::from_parts(metadata.clone(), extensions.clone(), message.clone());
+            let prepare = |mut req: Request<M>| {
                 if let Some(end) = deadline {
                     let remaining = end.saturating_duration_since(Instant::now());
                     if remaining.is_zero() {
                         return Err(expired());
                     }
-                    request.set_timeout(remaining);
+                    req.set_timeout(remaining);
                 }
-                let result = invoke(request).await;
-                attempts_left -= 1;
-                let Some(retry) = &self.retry else {
-                    return result;
-                };
-                if attempts_left == 0
-                    || !result
+                Ok(req)
+            };
+            if let Some(retry) = &self.retry {
+                let mut backoff = retry.initial_backoff.min(retry.max_backoff);
+                // Only clone attempts which must leave a request available for replay.
+                for _ in 1..retry.max_attempts {
+                    let replay = Request::from_parts(
+                        request.metadata().clone(),
+                        request.extensions().clone(),
+                        request.get_ref().clone(),
+                    );
+                    let result = invoke(prepare(replay)?).await;
+                    if !result
                         .as_ref()
                         .is_err_and(|e| retry.retryable_codes.contains(&e.code()))
-                {
-                    return result;
+                    {
+                        return result;
+                    }
+                    sleep(backoff).await;
+                    let seconds = backoff.as_secs_f64() * retry.backoff_multiplier.max(0.0);
+                    backoff = Duration::try_from_secs_f64(seconds.max(0.0))
+                        .unwrap_or(Duration::MAX)
+                        .min(retry.max_backoff);
                 }
-                sleep(backoff).await;
-                let seconds = backoff.as_secs_f64() * retry.backoff_multiplier.max(0.0);
-                backoff = Duration::try_from_secs_f64(seconds.max(0.0))
-                    .unwrap_or(Duration::MAX)
-                    .min(retry.max_backoff);
             }
+            invoke(prepare(request)?).await
         };
         let result = match deadline {
             Some(end) => match timeout_at(end, operation).await {
