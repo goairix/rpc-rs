@@ -2,6 +2,7 @@
 name = "rpc-registry"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "Service registration contracts and a Go-compatible etcd backend"
 
 [features]

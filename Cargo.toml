@@ -2,10 +2,14 @@
 members = ["tests/interop/rust", "crates/*", "examples/greeter/rust"]
 resolver = "3"
 
+[workspace.package]
+license = "MIT"
+
 [package]
 name = "rpc-rs"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "Go-compatible service discovery and governance for tonic"
 
 [features]

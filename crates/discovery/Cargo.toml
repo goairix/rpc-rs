@@ -2,6 +2,7 @@
 name = "rpc-discovery"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [features]
 # Kept for manifests that explicitly requested this feature before etcd became built-in.

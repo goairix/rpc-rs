@@ -2,6 +2,7 @@
 name = "rpc-naming"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "Service naming contracts with static and etcd backends"
 
 [features]
