@@ -13,13 +13,20 @@ pub enum LbPolicy {
 }
 
 pub(crate) struct Picker {
-    pub(crate) policy: LbPolicy,
+    schedule: Schedule,
     /// Next ticket within this immutable membership generation.
     cursor: AtomicUsize,
-    /// Indices for one exact smooth cycle (bounded in both construction cost and size).
-    cycle: Vec<usize>,
-    /// Inclusive cumulative weights, allowing ratios beyond a machine word.
-    cumulative: Vec<u128>,
+}
+
+/// Only weighted, unequal instances need a precomputed table.
+enum Schedule {
+    Empty,
+    First,
+    RoundRobin(usize),
+    /// One exact smooth cycle of channel indices.
+    Smooth(Vec<usize>),
+    /// Inclusive cumulative weights for proportional sampling.
+    Sampled(Vec<u128>),
 }
 
 /// Go registrations use the default weight of 100 for missing or nonpositive values.
@@ -29,22 +36,40 @@ pub(crate) fn effective_weight(weight: i64) -> i64 {
 
 impl Picker {
     pub(crate) fn new(policy: LbPolicy, weights: &[i64]) -> Self {
-        let mut cumulative = Vec::with_capacity(weights.len());
+        let schedule = match (weights.first(), policy) {
+            (None, _) => Schedule::Empty,
+            (_, LbPolicy::PickFirst) => Schedule::First,
+            (_, LbPolicy::RoundRobin) => Schedule::RoundRobin(weights.len()),
+            (Some(&first), LbPolicy::WeightedRoundRobin) => {
+                let first = effective_weight(first);
+                if weights.iter().all(|&w| effective_weight(w) == first) {
+                    Schedule::RoundRobin(weights.len())
+                } else {
+                    Self::weighted_schedule(weights)
+                }
+            }
+        };
+        Self {
+            schedule,
+            cursor: AtomicUsize::new(0),
+        }
+    }
+
+    fn weighted_schedule(weights: &[i64]) -> Schedule {
         let mut sum = 0_u128;
         let mut divisor = 0;
         for &raw in weights {
             let weight = effective_weight(raw) as u128;
             sum += weight;
-            cumulative.push(sum);
             divisor = gcd(divisor, weight);
         }
-        let mut cycle = Vec::new();
-        if policy == LbPolicy::WeightedRoundRobin && divisor > 0 && sum / divisor <= 512 {
+        if sum / divisor <= 512 {
             let weights: Vec<i64> = weights
                 .iter()
                 .map(|&w| ((effective_weight(w) as u128) / divisor) as i64)
                 .collect();
             let total: i64 = weights.iter().sum();
+            let mut cycle = Vec::with_capacity(total as usize);
             let mut credit = vec![0; weights.len()];
             for _ in 0..total {
                 let mut best = 0;
@@ -57,29 +82,33 @@ impl Picker {
                 credit[best] -= total;
                 cycle.push(best);
             }
-        }
-        Self {
-            policy,
-            cumulative,
-            cycle,
-            cursor: AtomicUsize::new(0),
+            Schedule::Smooth(cycle)
+        } else {
+            let mut total = 0;
+            Schedule::Sampled(
+                weights
+                    .iter()
+                    .map(|&w| {
+                        total += effective_weight(w) as u128;
+                        total
+                    })
+                    .collect(),
+            )
         }
     }
 
     /// Choose without synchronizing unrelated requests on a mutex.
     pub(crate) fn pick(&self) -> Option<usize> {
-        let total = *self.cumulative.last()?;
-        Some(match self.policy {
-            LbPolicy::PickFirst => 0,
-            LbPolicy::RoundRobin => {
-                self.cursor.fetch_add(1, Ordering::Relaxed) % self.cumulative.len()
+        Some(match &self.schedule {
+            Schedule::Empty => return None,
+            Schedule::First => 0,
+            Schedule::RoundRobin(len) => self.cursor.fetch_add(1, Ordering::Relaxed) % len,
+            Schedule::Smooth(cycle) => {
+                cycle[self.cursor.fetch_add(1, Ordering::Relaxed) % cycle.len()]
             }
-            LbPolicy::WeightedRoundRobin if !self.cycle.is_empty() => {
-                self.cycle[self.cursor.fetch_add(1, Ordering::Relaxed) % self.cycle.len()]
-            }
-            LbPolicy::WeightedRoundRobin => {
-                let ticket = fastrand::u128(0..total);
-                self.cumulative.partition_point(|w| *w <= ticket)
+            Schedule::Sampled(cumulative) => {
+                let ticket = fastrand::u128(0..*cumulative.last()?);
+                cumulative.partition_point(|w| *w <= ticket)
             }
         })
     }
@@ -121,6 +150,17 @@ mod tests {
     }
 
     #[test]
+    fn equal_effective_weights_use_rotation_without_a_table() {
+        for weights in [vec![0, 100, -1], vec![7; 512], vec![7; 513]] {
+            let picker = Picker::new(LbPolicy::WeightedRoundRobin, &weights);
+            assert!(matches!(picker.schedule, Schedule::RoundRobin(_)));
+            for index in 0..weights.len() * 2 {
+                assert_eq!(picker.pick(), Some(index % weights.len()));
+            }
+        }
+    }
+
+    #[test]
     fn weights_and_empty_membership() {
         for weights in [[500, 0], [5, 1], [500, -99]] {
             let picker = Picker::new(LbPolicy::WeightedRoundRobin, &weights);
@@ -131,8 +171,10 @@ mod tests {
             LbPolicy::WeightedRoundRobin,
             &[i64::MAX, i64::MAX - 1, i64::MAX - 2],
         );
-        assert!(picker.cycle.is_empty());
-        assert_eq!(picker.cumulative[2], i64::MAX as u128 * 3 - 3);
+        let Schedule::Sampled(ref cumulative) = picker.schedule else {
+            panic!("expected sampling");
+        };
+        assert_eq!(cumulative[2], i64::MAX as u128 * 3 - 3);
         assert!(picker.pick().unwrap() < 3);
     }
 }
