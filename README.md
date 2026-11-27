@@ -1,152 +1,145 @@
 # rpc-rs
 
-基于 tonic 的 Rust RPC 库。Go 和 Rust 服务使用同一份 protobuf 定义，可以直连，也可以通过共同的注册发现后端按服务名互调。库入口是 `rpc_rs`，生成的 tonic 服务和客户端可以直接接入。
+`rpc-rs` 是基于 tonic 和 Tokio 的 Rust gRPC 库。业务代码实现 protobuf 生成的服务 trait，通过 `RpcServer` 挂载服务。客户端可以直连地址，也可以按服务名发现实例，复用连接并进行负载均衡。支持 unary、客户端流、服务端流和双向流，错误使用标准 gRPC 状态码（0–16）。
 
-## 选择注册与发现后端
+## 跑通第一个调用
 
-服务端向 `RpcServer::start` 传入 `Arc<dyn naming::Registry>`，直连时传 `None`。客户端向 `discovery::Discovery::connect` 传入 `&dyn naming::Resolver` 和服务名。两端独立选择实现，跨语言按名称发现时需要共享兼容的服务目录。
+准备支持 Rust 2024 edition 的工具链和 `protoc`，在**仓库根目录**打开两个终端。示例使用本地静态服务目录，无需启动 etcd。
 
-命名层入口为 `rpc_rs::naming`。两个内置后端的注册、发现和资源管理各自集中在 `naming::etcd` 和 `naming::static_registry`。实现第三方后端时，从 `naming` 导入 `Registry`、`Resolver`、`DiscoverySubscription` 以及元数据类型。客户端的连接、故障重连和负载均衡由 `rpc_rs::discovery` 负责。
+在第一个终端启动 Rust 服务端。
 
-共享注册器由创建它的应用负责关闭。服务端停机只撤销自己创建的注册。`dyn Registry` 支持异步 `close()` 和 `on_status_change`；静态目录在加载后保持只读，etcd 后端通过 watch 派发外部变更通知。
-
-默认启用 Cargo 特性 `etcd`，内置的注册实现是 `EtcdRegistry`，发现客户端可直接传 `&EtcdConfig`。使用其他后端时可以关闭该特性：
-
-```toml
-rpc-rs = { path = "../rpc-rs", default-features = false }
+```sh
+cargo run --locked -p greeter-example --bin server
 ```
 
-自定义 `Resolver` 为每个服务返回一个 `DiscoverySubscription`，发布按稳定实例 ID 索引的完整快照，并处理刷新和关闭。框架负责筛选可用实例、维护连接和负载均衡。注册端通过 `Registration::Created` 返回所有权句柄，停机时框架用该句柄注销实例。[内存后端接入测试](tests/custom_backend.rs) 演示了这两个接口。
+在第二个终端调用 `example.v1.Greeter/SayHello`。
 
-### 从静态 JSON 文件读取
+```sh
+cargo run --locked -p greeter-example --bin client -- Ada
+```
 
-将服务目录保存为 `services.json`。每个实例填写服务名、对客户端可达的 IPv4 或 IPv6 地址，以及非零端口。同名的多条记录组成实例列表。`weight` 是可选的正整数，默认值为 100，在加权轮询时生效。
+预期输出 `Hello, Ada! (Rust)`。传入空字符串 `""` 可以观察 `INVALID_ARGUMENT`。服务端按 Ctrl-C 优雅退出。[协议定义](examples/greeter/proto/greeter.proto) · [Rust 服务端](examples/greeter/rust/src/bin/server.rs) · [Rust 客户端](examples/greeter/rust/src/bin/client.rs) · [跨语言运行示例](examples/greeter/README.md)
+
+## 接入自己的 Rust 项目
+
+将路径改为本地仓库的位置。如果只使用直连或静态发现，可以在 `rpc-rs` 依赖上设置 `default-features = false`。默认特性 `etcd` 提供动态注册与发现。
+
+```toml
+[dependencies]
+rpc-rs = { path = "../rpc-rs" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+
+[build-dependencies]
+tonic-prost-build = "0.14"
+```
+
+将业务协议保存为 `proto/greeter.proto`。在应用的 `build.rs` 中编译协议，同时输出供反射和限流使用的描述符。
+
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    tonic_prost_build::configure()
+        .file_descriptor_set_path(out.join("greeter_descriptor.bin"))
+        .compile_protos(&["proto/greeter.proto"], &["proto"])?;
+    Ok(())
+}
+```
+
+用 `tonic::include_proto!("example.v1")` 导入与 proto 包名对应的生成代码。实现 `Greeter` trait 后，在异步入口挂载服务。下面的 `Greetings` 实现见上面的 Rust 服务端。
+
+```rust
+use rpc_rs::server::RpcServer;
+use tokio::net::TcpListener;
+
+let listener = TcpListener::bind("127.0.0.1:45051").await?;
+let server = RpcServer::default()
+    .with_descriptor(tonic::include_file_descriptor_set!("greeter_descriptor"))
+    .with_reflection()
+    .add_service(GreeterServer::new(Greetings), Default::default())
+    .start(listener, None);
+
+server.until(async { let _ = tokio::signal::ctrl_c().await; }).await?;
+```
+
+`start(listener, None)` 启动直连服务。同一个 `RpcServer` 可以多次调用 `add_service`。客户端已知地址时，可直接使用生成的客户端。
+
+```rust
+let mut client = GreeterClient::connect("http://127.0.0.1:45051").await?;
+let mut request = tonic::Request::new(HelloRequest { name: "Ada".into() });
+request.set_timeout(std::time::Duration::from_secs(2));
+let reply = client.say_hello(request).await?.into_inner();
+```
+
+## 按服务名注册与发现
+
+服务端向 `RpcServer::start` 传入 `Arc<dyn naming::Registry>`，客户端向 `Discovery::connect` 传入 `&dyn naming::Resolver`。默认注册名是 protobuf 的全限定服务名，默认通告地址是监听器的实际地址。监听 `0.0.0.0` 或部署在容器内时，应通过 `RegistrationOptions::address` 指定客户端可达的地址。
+
+| 后端 | 服务端注册 | 客户端解析 | 实例变更 |
+| --- | --- | --- | --- |
+| 静态 JSON | `StaticRegistry` 校验服务名和通告地址 | `StaticRegistry` | 启动时加载，修改文件后需重新加载并创建发现对象 |
+| etcd | `EtcdRegistry` 注册并维护租约 | `EtcdConfig` | watch 跟踪实例、状态和权重变化 |
+| 自定义后端 | 实现 `naming::Registry` | 实现 `naming::Resolver` 和 `DiscoverySubscription` | 订阅按稳定实例 ID 发布完整快照 |
+
+### 静态服务目录
+
+在 JSON 中填写服务名、可达的 IPv4 或 IPv6 地址和非零端口。同名服务可配置多个实例，`weight` 为可选正整数，默认 100。
 
 ```json
 {
   "instances": [
-    { "service_name": "interop.Echo", "ip": "10.0.0.11", "port": 50051, "weight": 200 },
-    { "service_name": "interop.Echo", "ip": "10.0.0.12", "port": 50051 },
-    { "service_name": "billing.Invoice", "ip": "10.0.0.13", "port": 50052 }
+    { "service_name": "example.v1.Greeter", "ip": "10.0.0.11", "port": 45051, "weight": 200 },
+    { "service_name": "example.v1.Greeter", "ip": "10.0.0.12", "port": 45051, "weight": 100 }
   ]
 }
 ```
 
-服务端和客户端各自在启动时加载一份。以下示例中第一台服务器监听所有网卡，并通告文件中对应的地址：
+两端各自用 `StaticRegistry::from_file("services.json")?` 加载目录。客户端使用发现层创建生成客户端的传输句柄。
 
 ```rust
-use rpc_rs::{naming::{RegistrationOptions, static_registry::StaticRegistry}, server::RpcServer};
-use std::sync::Arc;
-
-let directory = Arc::new(StaticRegistry::from_file("services.json")?);
-let listener = tokio::net::TcpListener::bind("0.0.0.0:50051").await?;
-let options = RegistrationOptions { address: "10.0.0.11:50051".into(), ..Default::default() };
-let server = RpcServer::default()
-    .add_service(EchoServer::new(EchoImpl), options)
-    .start(listener, Some(directory));
-server.until(async { tokio::signal::ctrl_c().await.ok(); }).await?;
-```
-
-客户端按服务名选择实例：
-
-```rust
-use rpc_rs::{discovery::{Discovery, DiscoveryOptions, LbPolicy}, naming::static_registry::StaticRegistry};
+use rpc_rs::discovery::{Discovery, DiscoveryOptions, LbPolicy};
+use rpc_rs::naming::static_registry::StaticRegistry;
 
 let directory = StaticRegistry::from_file("services.json")?;
 let options = DiscoveryOptions { policy: LbPolicy::WeightedRoundRobin, ..Default::default() };
-let mut discovery = Discovery::connect(&directory, "interop.Echo", options).await?;
-let client = EchoClient::new(discovery.service());
-// 连接异步建立；调用和关闭方式见下文客户端示例。
+let mut discovery = Discovery::connect(&directory, "example.v1.Greeter", options).await?;
+let client = GreeterClient::new(discovery.service());
 ```
 
-注册时会校验服务名和通告地址。配置文件由部署方维护，实例停机后记录仍在，共用的连接管理器会摘除断开的实例并尝试重连。配置变更在重新加载文件并创建新的注册或发现对象后生效。静态后端支持 `default-features = false`。
+初次建连是异步的。需要首个请求等到实例上线时，可在限定时间内等待 `ready_count() > 0`。只有状态为 `up` 且连接可用的实例才参与分流，无可用实例时调用返回 `UNAVAILABLE`。默认策略为 `RoundRobin`，也支持 `PickFirst` 和 `WeightedRoundRobin`。应用应保留 `Discovery` 供客户端复用，使用结束后调用 `discovery.close().await`。[包含就绪等待和关闭的客户端](examples/greeter/rust/src/bin/client.rs) · [自定义后端接入示例](tests/custom_backend.rs)
 
-## 跑一次双向调用
+### etcd 动态注册
 
-将 Go 框架放在相邻的 `../rpc`。从本仓库根目录运行：
-
-```sh
-interop/run.sh direct
-interop/run.sh static
-interop/run.sh all
-```
-
-`direct` 启动两种语言的测试进程，通过 TCP 直连。`static` 使用临时 JSON 配置验证 Rust 客户端按服务名调用 Go，以及 Go 客户端直连经静态目录校验的 Rust 服务端。 `all` 启动专用 etcd 和真实的框架服务端，用服务名进行发现，运行四种 RPC、标准错误、metadata、超时、取消、限流及权重热更新用例。每个方向使用两个同名实例验证加权分流，脚本退出时关闭子进程并清理临时目录。
-
-需要 Rust/Cargo、Go、protoc、Python 3 和 Unix shell；`all` 还需要 etcd v3 服务端。可通过 `ETCD_BIN=/absolute/path/to/etcd interop/run.sh all` 指定可执行文件。已验证的组合为 Rust 1.95、Go 1.25.6、tonic 0.14.6、protoc 3.20.3 和 etcd 3.6.5。Go 测试桩已随仓库提供，Rust 桩在构建夹具时生成。
-
-业务 proto 的 package、service、方法名、流类型及消息字段号在两端保持一致。修改测试 proto 后，使用已安装的 `protoc-gen-go` 和 `protoc-gen-go-grpc` 更新 Go 桩：
-
-```sh
-protoc -I interop/proto --go_out=interop/go --go_opt=module=example.org/rpc-interop \
-  --go-grpc_out=interop/go --go-grpc_opt=module=example.org/rpc-interop interop/proto/echo.proto
-cargo build -p rpc-interop
-```
-
-## 接入 Rust 服务
-
-应用通过路径依赖引用本库，例如 `rpc-rs = { path = "../rpc-rs" }`。在业务 crate 的 build.rs 中用 tonic-prost-build 编译 proto，同时输出 file descriptor set。下面使用测试 proto 生成的 `EchoServer` 和应用自己的 `EchoImpl`。
+默认连接 `http://127.0.0.1:2379`，namespace 为 `grpc`，租约 TTL 为 5 秒，etcd 操作超时为 2 秒。可通过 `EtcdConfig` 配置 endpoints、认证和 TLS。客户端用同一 namespace 的 `EtcdConfig` 作为 resolver。
 
 ```rust
-use rpc_rs::{
-    naming::{etcd::{EtcdConfig, EtcdRegistry}, RegistrationOptions},
-    server::RpcServer,
-};
+use rpc_rs::naming::etcd::{EtcdConfig, EtcdRegistry};
 use std::sync::Arc;
 
 let config = EtcdConfig::default();
 let registry = Arc::new(EtcdRegistry::connect(config).await?);
-let listener = tokio::net::TcpListener::bind("127.0.0.1:50051").await?;
 let server = RpcServer::default()
-    .with_descriptor(tonic::include_file_descriptor_set!("echo_descriptor"))
-    .add_service(EchoServer::new(EchoImpl), RegistrationOptions::default())
+    .add_service(GreeterServer::new(Greetings), Default::default())
     .start(listener, Some(registry.clone()));
 
-let result = server.until(async { tokio::signal::ctrl_c().await.ok(); }).await;
+let result = server.until(async { let _ = tokio::signal::ctrl_c().await; }).await;
 registry.close().await?;
 result?;
 ```
 
-默认使用 protobuf 全限定服务名和监听器的实际地址注册。监听 `0.0.0.0` 或位于容器内时，通过 `RegistrationOptions::address` 填入客户端可达的主机名与端口。可多次调用 `add_service`。服务端在停机时注销自己创建的实例并排空在途请求；显式调用 `shutdown().await` 或等待 `until` 可获得清理结果。共享 registry 由其所有者最后关闭。注册状态回调需要调用 registry 时，捕获 `registry.downgrade()` 返回的弱引用，在回调执行期间调用 `upgrade()`。显式借出的 etcd 客户端 clone 由调用方释放。
+每条记录的 key 为 `/<namespace>/<service_name>/<instance_id>`。更新状态或权重时应保留原租约，权重热更新会复用现有连接。服务器停机时撤销自己创建的注册并排空在途请求。多个服务端共用注册器时，由所有者在最后一个服务端退出后关闭它。
 
-标准健康检查随服务器启动。反射可用 `with_reflection()` 开启。反射与 `with_limiter(TokenBucket::new(rate, burst))` 均使用随服务桩生成的 descriptor。通过 `with_transport` 传入配置了 TLS 或 HTTP/2 keepalive 的 tonic Server。应用可用 `with_governance` 接入 OpenTelemetry meter 和业务错误日志分类；tracing subscriber、runtime 和 exporter 由应用初始化。
+## 服务治理
 
-## 客户端发现与容错
-
-```rust
-use rpc_rs::{
-    discovery::{Discovery, DiscoveryOptions, LbPolicy},
-    governance::{CircuitBreaker, RetryPolicy, UnaryPolicy},
-    naming::etcd::EtcdConfig,
-};
-use std::time::Duration;
-
-let cfg = EtcdConfig::default();
-let options = DiscoveryOptions { policy: LbPolicy::WeightedRoundRobin, ..Default::default() };
-let mut discovery = Discovery::connect(&cfg, "interop.Echo", options).await?;
-let client = EchoClient::new(discovery.service());
-let policy = UnaryPolicy::default()
-    .with_retry(RetryPolicy::default())
-    .with_breaker(CircuitBreaker::default());
-let mut request = tonic::Request::new(message);
-request.set_timeout(Duration::from_secs(2));
-let response = policy.call(request, None, |request| {
-    let mut client = client.clone();
-    async move { client.say(request).await }
-}).await;
-discovery.close().await;
-let reply = response?.into_inner();
-```
-
-发现连接异步建立，每条新连接通过一次有超时限制的标准 Health/Watch 请求确认对端能返回 HTTP/2 gRPC 响应。第一次调用若需要等待就绪，给等待设置截止时间，并观察 `ready_count()`；无可用连接时生成客户端收到 `UNAVAILABLE`。保留 discovery 与客户端相同的使用寿命，克隆的客户端共享连接。TLS 可在 `DiscoveryOptions::tls` 中配置可信 CA、服务名和客户端证书。默认负载均衡是轮询，另支持优先保持首个可用连接和平滑加权轮询。
-
-重试与熔断由应用在强类型 unary 入口启用。仅对可安全重放的方法启用重试，整个调用共享一个截止时间。流式调用直接使用生成客户端。服务端与客户端示例见 [Rust 夹具](interop/rust/src/main.rs) 和 [Go 夹具](interop/go/main.go)。
-
-## etcd 与错误语义
-
-默认 namespace 为 `grpc`，租约为 5 秒，etcd 操作超时为 2 秒。配置可传入 endpoints、用户名密码和 TLS。每条注册记录使用 `/<namespace>/<service_name>/<instance_id>`。管理端修改状态或权重时应保留原 lease。只有 `up` 且连接可用的实例参与选址。权重热更新复用连接，恢复租约时保留实例 ID 与最近观察到的治理状态。
-
-Rust 只使用标准 gRPC 状态码。Go 客户端能读到 Rust 返回的 `INVALID_ARGUMENT` 和 `RESOURCE_EXHAUSTED`。现有 Go 框架会把 unary handler 的普通错误和内层限流错误转换为 `UNKNOWN`；Go 自定义码在 tonic 中也表现为 `UNKNOWN`。Go 流式 handler 返回的标准码可以直接传递。完整预期见[兼容规格](docs/superpowers/specs/2026-11-26-rust-rpc-design.md)。
+| 能力 | Rust 接入方式 |
+| --- | --- |
+| 健康检查与反射 | 默认提供标准健康服务。为业务服务传入描述符并调用 `with_reflection()` 可开启反射。 |
+| Unary 限流 | `with_descriptor(...)` 配合 `with_limiter(TokenBucket::new(rate, burst))`，按每秒补充量和突发容量限制请求，超限返回 `RESOURCE_EXHAUSTED`。 |
+| 重试与熔断 | 用 `UnaryPolicy::call` 包装幂等 unary 方法，按需配置 `RetryPolicy` 和 `CircuitBreaker`。所有尝试共享原截止时间。流式方法直接使用生成客户端。 |
+| TLS 与 keepalive | 服务端通过 `with_transport` 传入配置好的 `tonic::transport::Server`，发现客户端通过 `DiscoveryOptions` 配置 TLS、HTTP/2 keepalive 和连接超时。 |
+| 日志与指标 | 服务端通过 `with_governance` 接入 `GovernanceLayer`，应用负责初始化 tracing subscriber、OpenTelemetry meter 和 exporter。 |
 
 ## 开发验证
 
@@ -154,16 +147,6 @@ Rust 只使用标准 gRPC 状态码。Go 客户端能读到 Rust 返回的 `INVA
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
-interop/run.sh all
 ```
 
-TLS 测试需要 `openssl`。额外的 etcd 生命周期、watch 与故障切换用例可单独运行。设置 `RPC_ETCD_ENDPOINT` 指向专用测试 etcd，设置 `ETCD_BIN` 为 etcd 可执行文件后运行 `cargo test --workspace -- --ignored`。需要压缩历史的用例会启动自己的 etcd。
-
-若想单独观察两个进程，先构建 Rust 夹具，再在不同终端运行以下两条命令。对调测试时，把第一条换成 Go 的 serve，第二条换成 Rust 的 check。
-
-```sh
-cargo run -p rpc-interop -- serve 127.0.0.1:50051 rust
-(cd interop/go && GOWORK=off go run . check 127.0.0.1:50051)
-```
-
-通过服务名接入时，给两个进程设置相同的 `ETCD_ENDPOINT` 和 `RPC_NAMESPACE`，将客户端的地址参数改为 `discovery`。
+TLS 测试使用 `openssl`。运行额外的 etcd 集成用例时，将 `RPC_ETCD_ENDPOINT` 指向测试专用的 etcd，并将 `ETCD_BIN` 设为 etcd 服务端可执行文件的路径，然后执行 `cargo test --locked --workspace -- --ignored`。
