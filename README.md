@@ -13,14 +13,13 @@ rpc-rs 为基于 tonic 的 Rust gRPC 服务提供注册、发现和负载均衡�
 
 ## 安装
 
-将仓库检出到本地，在应用的 `Cargo.toml` 中添加路径依赖。以下假设应用和 `rpc-rs` 位于同一父目录。
+在应用项目中通过 Git 添加依赖。
 
-```toml
-[dependencies]
-rpc-rs = { path = "../rpc-rs" }
+```sh
+cargo add rpc-rs --git https://github.com/goairix/wxrpc-rs.git
 ```
 
-默认启用 `etcd` 特性。仅使用静态发现或直连的应用可设置 `default-features = false`。使用自己的 proto 时，生成客户端和服务端所需的依赖及 `build.rs` 配置见[接入指南](docs/integration.md)。
+默认启用 `etcd` 特性。仅使用静态发现或直连时，可在命令后加 `--no-default-features`。使用自己的 proto 时，生成客户端和服务端所需的依赖及 `build.rs` 配置见[接入指南](docs/integration.md)。
 
 ## 快速开始
 

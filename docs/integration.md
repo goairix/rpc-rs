@@ -4,11 +4,10 @@
 
 ## 生成服务和客户端
 
-将路径改为本地仓库的位置。如果只使用直连或静态发现，可以在 `rpc-rs` 依赖上设置 `default-features = false`。默认特性 `etcd` 提供动态注册与发现。
+按[安装说明](../README.md#安装)添加 `rpc-rs`，再将以下依赖合并到应用的 `Cargo.toml`，用于运行服务和编译业务 proto。
 
 ```toml
 [dependencies]
-rpc-rs = { path = "../rpc-rs" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
 tonic = "0.14"
 tonic-prost = "0.14"
