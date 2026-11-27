@@ -1,0 +1,5 @@
+{
+  "instances": [
+    { "service_name": "example.v1.Greeter", "ip": "127.0.0.1", "port": 45051 }
+  ]
+}

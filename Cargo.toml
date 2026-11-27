@@ -1,5 +1,5 @@
 [workspace]
-members = ["interop/rust", "crates/*"]
+members = ["interop/rust", "crates/*", "examples/greeter/rust"]
 resolver = "3"
 
 [package]
